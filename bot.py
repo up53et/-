@@ -283,7 +283,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif d.startswith('adm_proto_'): p = d.replace('adm_proto_',''); await q.message.edit_text("🌍 Страна:", reply_markup=await admin_country_kb(p)); return
         elif d.startswith('adm_country_'): _,_,p,c = d.split('_',3); text,kb = await admin_country_menu(p,c); await q.message.edit_text(text, reply_markup=kb); return
         elif d.startswith('adm_add1_'): _,_,p,c = d.split('_',3); context.user_data['admin_add'] = {'protocol':p,'country':c}; await q.message.edit_text(f"➕ Ключ\n{p} — {c}\n\nОтправьте ключ:"); return
-        elif d.startswith('adm_list_'): _,_,p,c = d.split('_',3);
+        elif d.startswith('adm_list_'):
+            _, _, p, c = d.split('_', 3)
             async with aiosqlite.connect('shop.db') as db:
                 cur = await db.execute('SELECT id,key_data,is_sold FROM vpn_keys WHERE protocol=? AND country=? ORDER BY id DESC LIMIT 10',(p,c)); keys = await cur.fetchall()
             text = f"📋 {PROTOCOL_NAMES[p]} — {c}\n\n" + "\n".join([f"ID {k[0]}: {'✅' if not k[2] else '❌'} | {k[1][:30]}..." for k in keys]) if keys else "Нет ключей"
