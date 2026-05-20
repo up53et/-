@@ -186,12 +186,12 @@ async def run_http():
 # ========== КЛАВИАТУРЫ ==========
 def main_menu(user_id=None):
     kb = [
-        [InlineKeyboardButton("📡 Купить роутер", callback_data='buy_router')],
-        [InlineKeyboardButton("🔑 Купить VPN ключ", callback_data='vpn_menu')],
-        [InlineKeyboardButton("📋 Мои подписки", callback_data='my_subs')],
-        [InlineKeyboardButton("👤 Профиль", callback_data='profile')],
-        [InlineKeyboardButton("🎟️ Промокод", callback_data='promo')],
-        [InlineKeyboardButton("⭐ Отзывы", callback_data='reviews')],
+        [InlineKeyboardButton("📡 Купить роутер", callback_data='buy_router'),
+         InlineKeyboardButton("🔑 Купить VPN", callback_data='vpn_menu')],
+        [InlineKeyboardButton("📋 Мои подписки", callback_data='my_subs'),
+         InlineKeyboardButton("👤 Профиль", callback_data='profile')],
+        [InlineKeyboardButton("🎟️ Промокод", callback_data='promo'),
+         InlineKeyboardButton("⭐ Отзывы", callback_data='reviews')],
         [InlineKeyboardButton("ℹ️ Помощь", callback_data='help')],
     ]
     if user_id == ADMIN_ID:
