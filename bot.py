@@ -17,8 +17,7 @@ PORT = int(os.environ.get("PORT", 8080))
 
 logging.basicConfig(level=logging.INFO)
 
-# URL сайта будет на Render
-WEBAPP_URL = None  # Заполнится после запуска
+WEBAPP_URL = None
 
 # ========== БАЗА ДАННЫХ ==========
 async def init_db():
@@ -40,7 +39,7 @@ async def register_user(user_id, username, first_name):
         await db.execute('INSERT OR REPLACE INTO users (user_id, username, first_name) VALUES (?, ?, ?)', (user_id, username, first_name))
         await db.commit()
 
-async def add_purchase(user_id, product, amount, **kwargs):
+async def add_purchase(user_id, product, amount):
     async with aiosqlite.connect('shop.db') as db:
         await db.execute('INSERT INTO purchases (user_id, product, amount) VALUES (?, ?, ?)', (user_id, product, amount))
         await db.commit()
@@ -67,7 +66,7 @@ async def get_user_subscriptions(user_id):
         c = await db.execute("SELECT protocol, country, expires_at, key_data FROM vpn_keys WHERE sold_to=? AND is_sold=TRUE AND expires_at > datetime('now')", (user_id,))
         return await c.fetchall()
 
-# ========== HTTP-СЕРВЕР (ОТДАЁТ САЙТ) ==========
+# ========== HTTP-СЕРВЕР (ОТДАЁТ index.html) ==========
 async def handle_request(reader, writer):
     try:
         await asyncio.wait_for(reader.read(4096), timeout=2.0)
@@ -75,18 +74,20 @@ async def handle_request(reader, writer):
         pass
     
     try:
-        with open("static/index.html", "rb") as f:
+        with open("static/index.html", "r", encoding="utf-8") as f:
             html = f.read()
-    except:
-        html = b"<h1>WebApp</h1>"
+    except Exception as e:
+        html = f"<h1>WebApp error: {e}</h1>"
     
+    body = html.encode("utf-8")
     response = (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Type: text/html; charset=utf-8\r\n"
-        b"Content-Length: " + str(len(html)).encode() + b"\r\n"
-        b"Connection: close\r\n"
-        b"\r\n" + html
-    )
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode() + body
+    
     writer.write(response)
     await writer.drain()
     writer.close()
@@ -190,13 +191,9 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(user_id, f"✅ Заказ №{order_id} оплачен! {ADMIN_USERNAME} свяжется для доставки.")
         await update.message.reply_text(f"✅ Заказ №{order_id} отмечен")
     else:
-        # Ищем протокол и страну
-        async with aiosqlite.connect('shop.db') as db:
-            c = await db.execute('SELECT product FROM purchases WHERE id=?', (order_id,))
-            prod = (await c.fetchone())[0]
-        protocol = prod.replace('vpn_', '')
-        # Пытаемся найти страну в данных WebApp (сохранена в context при заказе)
-        country = "Нидерланды"  # По умолчанию
+        protocol = product.replace('vpn_', '')
+        # Ищем страну (по умолчанию Нидерланды)
+        country = "Нидерланды"
         days = 30
         expires = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
         key = await get_available_key(protocol, country)
@@ -234,7 +231,6 @@ async def main():
     await init_db()
     asyncio.create_task(run_server())
     
-    # Узнаём URL сервиса
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
     if render_url:
         WEBAPP_URL = render_url + "/"
