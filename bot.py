@@ -350,7 +350,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = "Нет ключей"
             await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data=f'adm_country_{p}_{c}')]]))
             return
-                elif d.startswith('approve_'):
+        elif d.startswith('approve_'):
             oid = int(d.replace('approve_', ''))
             await approve_order(update, context, oid)
             return
