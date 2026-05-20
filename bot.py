@@ -9,7 +9,6 @@ import logging
 BOT_TOKEN = "8809011538:AAFMpc0vBtMMHS0ZbXpjDbPmFkWfxW_jHtM"
 ADMIN_ID = 5737961034
 ADMIN_USERNAME = "@yng_beko"
-CARD_NUMBER = "2200-7020-5664-8004"
 PORT = int(os.environ.get("PORT", 8080))
 BOT_NAME = "NetVault"
 
@@ -22,7 +21,6 @@ DURATION_NAMES = {'1month': '1 месяц', '3months': '3 месяца', '6month
 DURATION_DAYS = {'1month': 30, '3months': 90, '6months': 180, '1year': 365}
 DURATION_DISCOUNTS = {'1month': 0, '3months': 0.10, '6months': 0.20, '1year': 0.30}
 
-# Стартовые страны
 DEFAULT_COUNTRIES = {
     'vless': ['Нидерланды', 'Армения', 'Казахстан', 'Турция', 'Польша'],
     'wireguard': ['Нидерланды'],
@@ -32,12 +30,23 @@ DEFAULT_COUNTRIES = {
 # ========== БАЗА ДАННЫХ ==========
 async def init_db():
     async with aiosqlite.connect('shop.db') as db:
-        await db.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT)''')
-        await db.execute('''CREATE TABLE IF NOT EXISTS purchases (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product TEXT, amount REAL, status TEXT DEFAULT "pending", phone TEXT, address TEXT, full_name TEXT, protocol TEXT, country TEXT, duration TEXT, os TEXT, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        await db.execute('''CREATE TABLE IF NOT EXISTS vpn_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, protocol TEXT, country TEXT, key_data TEXT, is_sold BOOLEAN DEFAULT FALSE, sold_to INTEGER, expires_at TEXT)''')
-        await db.execute('''CREATE TABLE IF NOT EXISTS countries (id INTEGER PRIMARY KEY AUTOINCREMENT, protocol TEXT, country TEXT, is_active BOOLEAN DEFAULT TRUE, UNIQUE(protocol, country))''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY, personal_id INTEGER UNIQUE, username TEXT, first_name TEXT,
+            registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, product TEXT, amount REAL,
+            status TEXT DEFAULT "pending", phone TEXT, address TEXT, full_name TEXT,
+            protocol TEXT, country TEXT, duration TEXT, os TEXT,
+            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS vpn_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, protocol TEXT, country TEXT,
+            key_data TEXT, is_sold BOOLEAN DEFAULT FALSE, sold_to INTEGER,
+            personal_id INTEGER, expires_at TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS countries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, protocol TEXT, country TEXT,
+            is_active BOOLEAN DEFAULT TRUE, UNIQUE(protocol, country))''')
         await db.commit()
-    # Заполняем страны по умолчанию
+    
     for proto, cntrs in DEFAULT_COUNTRIES.items():
         for c in cntrs:
             try:
@@ -46,10 +55,23 @@ async def init_db():
                     await db.commit()
             except: pass
 
-async def reg(uid, un, fn):
+async def get_or_create_personal_id(user_id, username, first_name):
+    """Получает или создаёт персональный ID пользователя"""
     async with aiosqlite.connect('shop.db') as db:
-        await db.execute('INSERT OR REPLACE INTO users VALUES (?,?,?)', (uid, un, fn))
+        c = await db.execute('SELECT personal_id FROM users WHERE user_id=?', (user_id,))
+        row = await c.fetchone()
+        if row and row[0]:
+            return row[0]
+        # Создаём новый ID
+        c = await db.execute('SELECT COALESCE(MAX(personal_id), 0) + 1 FROM users')
+        new_id = (await c.fetchone())[0]
+        await db.execute('INSERT OR REPLACE INTO users (user_id, personal_id, username, first_name) VALUES (?, ?, ?, ?)',
+                         (user_id, new_id, username, first_name))
         await db.commit()
+        return new_id
+
+async def reg(uid, un, fn):
+    await get_or_create_personal_id(uid, un, fn)
 
 async def add_order(uid, prod, amt, **kw):
     async with aiosqlite.connect('shop.db') as db:
@@ -66,9 +88,9 @@ async def get_key(protocol, country):
         c = await db.execute('SELECT id,key_data FROM vpn_keys WHERE protocol=? AND country=? AND is_sold=FALSE LIMIT 1', (protocol, country))
         return await c.fetchone()
 
-async def sell_key(kid, uid, exp):
+async def sell_key(kid, uid, pid, exp):
     async with aiosqlite.connect('shop.db') as db:
-        await db.execute('UPDATE vpn_keys SET is_sold=TRUE,sold_to=?,expires_at=? WHERE id=?', (uid, exp, kid))
+        await db.execute('UPDATE vpn_keys SET is_sold=TRUE, sold_to=?, personal_id=?, expires_at=? WHERE id=?', (uid, pid, exp, kid))
         await db.commit()
 
 async def add_key(protocol, country, key_data):
@@ -82,7 +104,6 @@ async def add_country_to_db(protocol, country):
         await db.commit()
 
 async def remove_country_from_db(protocol, country):
-    """Деактивирует страну (не удаляет ключи и подписки)"""
     async with aiosqlite.connect('shop.db') as db:
         await db.execute('UPDATE countries SET is_active=FALSE WHERE protocol=? AND country=?', (protocol, country))
         await db.commit()
@@ -91,6 +112,23 @@ async def get_active_countries(protocol):
     async with aiosqlite.connect('shop.db') as db:
         c = await db.execute('SELECT country FROM countries WHERE protocol=? AND is_active=TRUE ORDER BY country', (protocol,))
         return [row[0] for row in await c.fetchall()]
+
+async def get_user_by_personal_id(personal_id):
+    async with aiosqlite.connect('shop.db') as db:
+        c = await db.execute('SELECT user_id, first_name, username FROM users WHERE personal_id=?', (personal_id,))
+        return await c.fetchone()
+
+async def get_user_subscriptions_by_pid(personal_id):
+    async with aiosqlite.connect('shop.db') as db:
+        c = await db.execute(
+            "SELECT id, protocol, country, expires_at, key_data FROM vpn_keys WHERE personal_id=? AND is_sold=TRUE AND expires_at > datetime('now') ORDER BY expires_at",
+            (personal_id,))
+        return await c.fetchall()
+
+async def extend_subscription(key_id, days_to_add):
+    async with aiosqlite.connect('shop.db') as db:
+        await db.execute(f"UPDATE vpn_keys SET expires_at = datetime(expires_at, '+{days_to_add} days') WHERE id=?", (key_id,))
+        await db.commit()
 
 # HTTP
 async def http_handler(reader, writer):
@@ -142,6 +180,7 @@ def admin_main_kb():
         [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
         [InlineKeyboardButton("🔑 Управление ключами", callback_data='admin_keys')],
         [InlineKeyboardButton("🌍 Управление странами", callback_data='admin_countries')],
+        [InlineKeyboardButton("⏱️ Продлить подписку", callback_data='admin_extend')],
         [InlineKeyboardButton("🔙 Назад", callback_data='back')],
     ])
 
@@ -197,19 +236,27 @@ async def admin_country_menu(protocol, country):
     ]
     return text, InlineKeyboardMarkup(kb)
 
+def extend_duration_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("1 месяц (+30 дн)", callback_data='ext_30')],
+        [InlineKeyboardButton("3 месяца (+90 дн)", callback_data='ext_90')],
+        [InlineKeyboardButton("6 месяцев (+180 дн)", callback_data='ext_180')],
+        [InlineKeyboardButton("1 год (+365 дн)", callback_data='ext_365')],
+        [InlineKeyboardButton("🔙 Назад", callback_data='admin')],
+    ])
+
 # ========== ОБРАБОТЧИКИ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    await reg(u.id, u.username, u.first_name)
-    text = f"👋 Добро пожаловать в {BOT_NAME}!\n\n📡 Роутер - {ROUTER_PRICE}р\n🌐 VLESS - {PRICES['vless']}р/мес\n🔒 WireGuard - {PRICES['wireguard']}р/мес\n🛡️ AmneziaWG - {PRICES['amneziawg']}р/мес\n\n💳 Оплата: {CARD_NUMBER}\n📞 {ADMIN_USERNAME}"
+    pid = await get_or_create_personal_id(u.id, u.username, u.first_name)
+    text = f"👋 Добро пожаловать в {BOT_NAME}!\n\n🆔 Ваш ID: {pid}\n\n📡 Роутер - {ROUTER_PRICE}р\n🌐 VLESS - {PRICES['vless']}р/мес\n🔒 WireGuard - {PRICES['wireguard']}р/мес\n🛡️ AmneziaWG - {PRICES['amneziawg']}р/мес\n\n📞 Связь: {ADMIN_USERNAME}"
     await update.message.reply_text(text, reply_markup=main_menu(u.id))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     d = q.data; u = q.from_user
-    await reg(u.id, u.username, u.first_name)
+    pid = await get_or_create_personal_id(u.id, u.username, u.first_name)
     
-    # АДМИН
     if u.id == ADMIN_ID:
         if d == 'admin':
             await q.message.edit_text("👑 Админ-панель", reply_markup=admin_main_kb())
@@ -227,6 +274,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif d == 'admin_countries':
             await q.message.edit_text("🌍 Управление странами:", reply_markup=admin_protocol_kb_countries())
             return
+        elif d == 'admin_extend':
+            context.user_data['admin_extend_step'] = 'input_pid'
+            await q.message.edit_text("⏱️ Продление подписки\n\nВведите персональный ID пользователя:")
+            return
         elif d.startswith('adm_cnt_'):
             p = d.replace('adm_cnt_', '')
             await q.message.edit_text(f"🌍 Страны {PROTOCOL_NAMES[p]}:", reply_markup=await admin_country_kb_manage(p))
@@ -234,7 +285,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif d.startswith('adm_delcountry_'):
             _, _, p, c = d.split('_', 3)
             await remove_country_from_db(p, c)
-            await q.answer(f"✅ Регион {c} удалён из каталога!")
+            await q.answer(f"✅ Регион {c} удалён!")
             await q.message.edit_text(f"🌍 Страны {PROTOCOL_NAMES[p]}:", reply_markup=await admin_country_kb_manage(p))
             return
         elif d.startswith('adm_addcountry_'):
@@ -276,8 +327,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = "Нет ключей"
             await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f'adm_country_{p}_{c}')]]))
             return
+        elif d.startswith('extend_pid_'):
+            # Выбор подписки для продления
+            pid = int(d.replace('extend_pid_', ''))
+            subs = await get_user_subscriptions_by_pid(pid)
+            if not subs:
+                await q.answer("Нет активных подписок у этого пользователя", show_alert=True)
+                return
+            kb = []
+            for s in subs:
+                kb.append([InlineKeyboardButton(f"🔐 {PROTOCOL_NAMES.get(s[1], s[1])} ({s[2]}) до {s[3][:10]}", callback_data=f'ext_key_{s[0]}')])
+            kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin_extend')])
+            user_info = await get_user_by_personal_id(pid)
+            name = user_info[1] if user_info else "Неизвестный"
+            await q.message.edit_text(f"👤 {name} (ID: {pid})\n\nВыберите подписку для продления:", reply_markup=InlineKeyboardMarkup(kb))
+            return
+        elif d.startswith('ext_key_'):
+            # Выбор срока продления
+            key_id = int(d.replace('ext_key_', ''))
+            context.user_data['extend_key_id'] = key_id
+            await q.message.edit_text(f"🔑 Ключ ID: {key_id}\n\nВыберите срок продления:", reply_markup=extend_duration_kb())
+            return
+        elif d.startswith('ext_'):
+            days = int(d.replace('ext_', ''))
+            key_id = context.user_data.get('extend_key_id')
+            if key_id:
+                await extend_subscription(key_id, days)
+                context.user_data.pop('extend_key_id', None)
+                await q.answer(f"✅ Подписка продлена на {days} дней!", show_alert=True)
+                await q.message.edit_text(f"✅ Подписка продлена на {days} дней!", reply_markup=admin_main_kb())
+            return
     
-    # ОБЫЧНОЕ МЕНЮ
     if d == 'back':
         await q.message.edit_text("🏠 Главное меню:", reply_markup=main_menu(u.id))
     elif d == 'buy_router':
@@ -297,30 +377,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, p, c, dur, price = d.split('_', 4)
         price = int(price)
         oid = await add_order(u.id, f'vpn_{p}', price, protocol=p, country=c, duration=dur)
-        text = f"✅ Заказ №{oid}\n\n🔐 {PROTOCOL_NAMES[p]}\n🌍 {c}\n⏱️ {DURATION_NAMES[dur]}\n💰 {price}р\n\n💳 Оплата: {CARD_NUMBER}\n\n⚠️ ПРИ ПЕРЕВОДЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}"
+        text = f"✅ Заказ №{oid}\n\n🔐 {PROTOCOL_NAMES[p]}\n🌍 {c}\n⏱️ {DURATION_NAMES[dur]}\n💰 {price}р\n\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 Для оплаты: {ADMIN_USERNAME}"
         await q.message.edit_text(text, reply_markup=main_menu(u.id))
-        await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n{p} {c}\n💰 {price}р\n@{u.username or u.id}")
+        await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n{p} {c}\n💰 {price}р\n👤 @{u.username or u.id} (ID: {pid})")
     elif d == 'my_subs':
         async with aiosqlite.connect('shop.db') as db:
             c = await db.execute("SELECT protocol,country,expires_at,key_data FROM vpn_keys WHERE sold_to=? AND is_sold=TRUE AND expires_at > datetime('now')", (u.id,))
             subs = await c.fetchall()
         if subs:
-            text = "🔑 Ваши подписки:\n\n"
+            text = f"🔑 Ваши подписки (ID: {pid}):\n\n"
             for s in subs: text += f"🔐 {PROTOCOL_NAMES.get(s[0],s[0])} ({s[1]})\n⏱️ До: {s[2][:10]}\n🔑 {s[3][:40]}...\n\n"
-        else: text = "Нет активных подписок"
+        else: text = f"Нет активных подписок\nВаш ID: {pid}"
         await q.message.edit_text(text, reply_markup=main_menu(u.id))
     elif d == 'profile':
         async with aiosqlite.connect('shop.db') as db:
             c = await db.execute('SELECT COUNT(*),SUM(amount) FROM purchases WHERE user_id=? AND status="paid"', (u.id,))
             o, s = await c.fetchone()
-        await q.message.edit_text(f"👤 {u.first_name}\n🆔 {u.id}\n🏷️ @{u.username or 'нет'}\n🛒 Заказов: {o or 0}\n💰 Потрачено: {s or 0}р", reply_markup=main_menu(u.id))
+        await q.message.edit_text(f"👤 {u.first_name}\n🆔 ID: {pid}\n🏷️ @{u.username or 'нет'}\n🛒 Заказов: {o or 0}\n💰 Потрачено: {s or 0}р", reply_markup=main_menu(u.id))
     elif d == 'help':
-        await q.message.edit_text(f"ℹ️ {BOT_NAME}\n\n📡 Роутер - {ROUTER_PRICE}р\n🌐 VLESS - {PRICES['vless']}р\n🔒 WireGuard - {PRICES['wireguard']}р\n🛡️ AmneziaWG - {PRICES['amneziawg']}р\n\n💳 {CARD_NUMBER}\n📞 {ADMIN_USERNAME}", reply_markup=main_menu(u.id))
+        await q.message.edit_text(f"ℹ️ {BOT_NAME}\n\n📡 Роутер - {ROUTER_PRICE}р\n🌐 VLESS - {PRICES['vless']}р\n🔒 WireGuard - {PRICES['wireguard']}р\n🛡️ AmneziaWG - {PRICES['amneziawg']}р\n\n📞 {ADMIN_USERNAME}\n\nВаш ID: {pid}", reply_markup=main_menu(u.id))
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user; t = update.message.text
+    pid = await get_or_create_personal_id(u.id, u.username, u.first_name)
     
-    # Админ добавляет ключ
     if u.id == ADMIN_ID and context.user_data.get('admin_add'):
         info = context.user_data['admin_add']
         await add_key(info['protocol'], info['country'], t.strip())
@@ -329,15 +409,36 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Ключ добавлен!\n\n{text}", reply_markup=kb)
         return
     
-    # Админ добавляет страну
     if u.id == ADMIN_ID and context.user_data.get('add_country'):
         p = context.user_data['add_country']
         await add_country_to_db(p, t.strip())
         context.user_data.pop('add_country')
-        await update.message.reply_text(f"✅ Страна {t.strip()} добавлена в {PROTOCOL_NAMES[p]}!", reply_markup=await admin_country_kb_manage(p))
+        await update.message.reply_text(f"✅ Страна {t.strip()} добавлена!", reply_markup=await admin_country_kb_manage(p))
         return
     
-    # Обычный пользователь - заказ роутера
+    if u.id == ADMIN_ID and context.user_data.get('admin_extend_step') == 'input_pid':
+        try:
+            target_pid = int(t.strip())
+            user_info = await get_user_by_personal_id(target_pid)
+            if not user_info:
+                await update.message.reply_text("❌ Пользователь с таким ID не найден")
+                context.user_data.pop('admin_extend_step', None)
+                return
+            subs = await get_user_subscriptions_by_pid(target_pid)
+            if not subs:
+                await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\n\nНет активных подписок для продления", reply_markup=admin_main_kb())
+                context.user_data.pop('admin_extend_step', None)
+                return
+            kb = []
+            for s in subs:
+                kb.append([InlineKeyboardButton(f"🔐 {PROTOCOL_NAMES.get(s[1], s[1])} ({s[2]}) до {s[3][:10]}", callback_data=f'ext_key_{s[0]}')])
+            kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin')])
+            await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\n\nВыберите подписку:", reply_markup=InlineKeyboardMarkup(kb))
+            context.user_data['admin_extend_step'] = None
+        except:
+            await update.message.reply_text("❌ Введите числовой ID")
+        return
+    
     if context.user_data.get('wait') == 'router':
         p = t.strip().split('\n')
         if len(p) >= 3:
@@ -346,13 +447,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             addr = '\n'.join(p[2:]).strip()
             oid = await add_order(u.id, 'router', ROUTER_PRICE, full_name=name, phone=phone, address=addr)
             await update.message.reply_text(
-                f"✅ Заказ №{oid}\n\n📡 Роутер NC-1121\n👤 {name}\n📞 {phone}\n📍 {addr}\n💰 {ROUTER_PRICE}р\n\n💳 Оплата: {CARD_NUMBER}\n\n⚠️ ПРИ ПЕРЕВОДЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}",
+                f"✅ Заказ №{oid}\n\n📡 Роутер NC-1121\n👤 {name}\n📞 {phone}\n📍 {addr}\n💰 {ROUTER_PRICE}р\n\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}",
                 reply_markup=main_menu(u.id)
             )
-            await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n📡 Роутер\n👤 {name}\n💰 {ROUTER_PRICE}р")
+            await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n📡 Роутер\n👤 {name}\n💰 {ROUTER_PRICE}р\nID: {pid}")
             context.user_data['wait'] = None
         else:
-            await update.message.reply_text("❌ Введите ровно 3 строки:\n1. Имя Фамилия\n2. Телефон\n3. Адрес")
+            await update.message.reply_text("❌ Введите 3 строки:\n1. Имя\n2. Телефон\n3. Адрес")
         return
 
 # ========== АДМИН-КОМАНДЫ ==========
@@ -366,13 +467,15 @@ async def addkey_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     a = context.args
-    if not a: await update.message.reply_text("❌ /done номер"); return
+    if not a: await update.message.reply_text("❌ /done номер_заказа [личный_id]"); return
     oid = int(a[0])
     async with aiosqlite.connect('shop.db') as db:
         c = await db.execute('SELECT * FROM purchases WHERE id=?', (oid,))
         o = await c.fetchone()
     if not o: await update.message.reply_text("❌ Не найден"); return
     uid, prod = o[1], o[2]
+    pid = await get_or_create_personal_id(uid, None, None)
+    
     if 'router' in prod:
         async with aiosqlite.connect('shop.db') as db:
             await db.execute('UPDATE purchases SET status="paid" WHERE id=?', (oid,))
@@ -387,7 +490,7 @@ async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         exp = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
         key = await get_key(p, c)
         if key:
-            await sell_key(key[0], uid, exp)
+            await sell_key(key[0], uid, pid, exp)
             async with aiosqlite.connect('shop.db') as db:
                 await db.execute('UPDATE purchases SET status="paid" WHERE id=?', (oid,))
                 await db.commit()
@@ -405,13 +508,14 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📊 Пользователей: {u}\n🛒 Заказов: {o or 0}\n💰 Выручка: {r or 0}р\n🔑 Ключей: {k}")
 
 async def mysubs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pid = await get_or_create_personal_id(update.effective_user.id, update.effective_user.username, update.effective_user.first_name)
     async with aiosqlite.connect('shop.db') as db:
         c = await db.execute("SELECT protocol,country,expires_at FROM vpn_keys WHERE sold_to=? AND is_sold=TRUE AND expires_at > datetime('now')", (update.effective_user.id,))
         subs = await c.fetchall()
     if subs:
-        text = "🔑 Подписки:\n\n"
+        text = f"🔑 Подписки (ID: {pid}):\n\n"
         for s in subs: text += f"🔐 {PROTOCOL_NAMES.get(s[0],s[0])} ({s[1]}) до {s[2][:10]}\n"
-    else: text = "Нет подписок"
+    else: text = f"Нет подписок\nВаш ID: {pid}"
     await update.message.reply_text(text)
 
 # ========== ЗАПУСК ==========
