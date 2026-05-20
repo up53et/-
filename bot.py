@@ -151,21 +151,37 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
     
     elif order_type == 'vpn':
-        protocol = data.get('protocol')
-        os_choice = data.get('os')
-        duration = data.get('duration')
-        duration_name = data.get('durationName')
-        amount = data.get('amount')
-        order_id = await add_purchase(user.id, f'vpn_{protocol}', amount, protocol=protocol, os=os_choice, duration=duration)
-        
-        os_names = {'linux': '🐧 Linux', 'ios': '🍎 iOS', 'windows': '🪟 Windows', 'android': '📱 Android'}
-        protocol_names = {'vless': 'VLESS', 'wireguard': 'WireGuard', 'amneziawg': 'AmneziaWG'}
-        
-        await update.message.reply_text(
-            f"✅ *Заказ №{order_id}*\n\n🔐 {protocol_names[protocol]}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n💰 {amount} XTR",
-            parse_mode='Markdown'
-        )
-        
+    protocol = data.get('protocol')
+    os_choice = data.get('os')
+    country = data.get('country', '')
+    duration = data.get('duration')
+    duration_name = data.get('durationName')
+    amount = data.get('amount')
+    order_id = await add_purchase(user.id, f'vpn_{protocol}', amount, protocol=protocol, os=os_choice, duration=duration)
+    
+    os_names = {'linux': '🐧 Linux', 'ios': '🍎 iOS', 'windows': '🪟 Windows', 'android': '📱 Android'}
+    protocol_names = {'vless': 'VLESS', 'wireguard': 'WireGuard', 'amneziawg': 'AmneziaWG'}
+    
+    await update.message.reply_text(
+        f"✅ *Заказ №{order_id}*\n\n🔐 {protocol_names[protocol]}\n🌍 {country}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n💰 {amount} XTR",
+        parse_mode='Markdown'
+    )
+    
+    await context.bot.send_invoice(
+        chat_id=user.id,
+        title=f"{protocol_names[protocol]} VPN",
+        description=f"Страна: {country}\nОС: {os_names[os_choice]}\nСрок: {duration_name}",
+        payload=f"vpn_{order_id}_{protocol}_{duration}",
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(f"{protocol_names[protocol]} ({duration_name})", amount)]
+    )
+    
+    await context.bot.send_message(
+        ADMIN_ID,
+        f"🔔 *Новый заказ №{order_id}*\n🔐 {protocol_names[protocol]}\n🌍 {country}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n💰 {amount} XTR",
+        parse_mode='Markdown'
+    )
         await context.bot.send_invoice(
             chat_id=user.id,
             title=f"{protocol_names[protocol]} VPN",
