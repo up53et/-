@@ -433,7 +433,9 @@ async def do_extend(update, context, days):
 async def approve_order(update, context, oid):
     q = update.callback_query
     o = await get_purchase(oid)
-    if not o: await q.answer("Не найден"); return
+    if not o: 
+        await q.answer("Не найден", show_alert=True)
+        return
     uid, prod = o[1], o[2]
     pid = await get_or_create_pid(uid, None, None)
     
@@ -459,7 +461,9 @@ async def approve_order(update, context, oid):
 async def reject_order(update, context, oid):
     q = update.callback_query
     o = await get_purchase(oid)
-    if not o: await q.answer("Не найден"); return
+    if not o: 
+        await q.answer("Не найден", show_alert=True)
+        return
     uid = o[1]
     await update_purchase_status(oid, 'rejected')
     await context.bot.send_message(uid, f"❌ Заказ №{oid} отклонён. Свяжитесь с {ADMIN_USERNAME}")
