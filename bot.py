@@ -114,7 +114,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = json.loads(update.effective_message.web_app_data.data)
+    if update.effective_message.web_app_data:
+        data = json.loads(update.effective_message.web_app_data.data)
+    else:
+        await update.message.reply_text("Пожалуйста, используйте кнопку магазина")
+        return
     user = update.effective_user
     await register_user(user.id, user.username, user.first_name)
     
@@ -246,6 +250,7 @@ async def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("mysubs", mysubs))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, web_app_data_handler))
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     
