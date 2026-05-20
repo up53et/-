@@ -444,31 +444,34 @@ async def approve_order(q, context, oid):
         await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен! {ADMIN_USERNAME} свяжется.")
         await q.message.edit_text(q.message.text + "\n\n✅ ОДОБРЕНО", reply_markup=None)
         await q.answer("✅ Заказ одобрен!", show_alert=True)
+        return
+    
+    # VPN заказ — получаем данные из purchases
+    async with aiosqlite.connect('shop.db') as db:
+        c = await db.execute('SELECT protocol, country, duration FROM purchases WHERE id=?', (oid,))
+        row = await c.fetchone()
+    
+    if row and row[0]:
+        protocol = row[0]
+        country = row[1] if row[1] else 'Нидерланды'
+        duration = row[2] if row[2] else '1month'
     else:
-        # VPN заказ - берём протокол и страну из заказа
-        protocol = o[6]
-        country = o[7]
-        duration = o[8]
-        
-        if not protocol:
-            protocol = prod.replace('vpn_', '')
-        if not country:
-            country = 'Нидерланды'
-        if not duration:
-            duration = '1month'
-        
-        days = DURATION_DAYS.get(duration, 30)
-        exp = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-        
-        key = await get_key(protocol, country)
-        if key:
-            await sell_key(key[0], uid, pid, exp)
-            await update_purchase_status(oid, 'paid')
-            await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!\n\n🔑 Ключ:\n{key[1]}\n⏱️ До: {format_date(exp)}")
-            await q.message.edit_text(q.message.text + "\n\n✅ Ключ выдан!", reply_markup=None)
-            await q.answer("✅ Ключ выдан!", show_alert=True)
-        else:
-            await q.answer(f"❌ Нет ключей {PROTOCOL_NAMES.get(protocol, protocol)} ({country})!", show_alert=True)
+        protocol = prod.replace('vpn_', '')
+        country = 'Нидерланды'
+        duration = '1month'
+    
+    days = DURATION_DAYS.get(duration, 30)
+    exp = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    
+    key = await get_key(protocol, country)
+    if key:
+        await sell_key(key[0], uid, pid, exp)
+        await update_purchase_status(oid, 'paid')
+        await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!\n\n🔑 Ключ:\n{key[1]}\n⏱️ До: {format_date(exp)}")
+        await q.message.edit_text(q.message.text + "\n\n✅ Ключ выдан!", reply_markup=None)
+        await q.answer("✅ Ключ выдан!", show_alert=True)
+    else:
+        await q.answer(f"❌ Нет ключей {PROTOCOL_NAMES.get(protocol, protocol)} ({country})!\n\nДобавьте ключ через админку: /addkey {protocol} {country} КЛЮЧ", show_alert=True)
 
 async def reject_order(q, context, oid):
     o = await get_purchase(oid)
