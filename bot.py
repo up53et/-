@@ -3,14 +3,15 @@ import aiosqlite
 import json
 import os
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, LabeledPrice
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, PreCheckoutQueryHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import logging
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8809011538:AAFMpc0vBtMMHS0ZbXpjDbPmFkWfxW_jHtM"
 ADMIN_ID = 5737961034
 ADMIN_USERNAME = "@yng_beko"
+CARD_NUMBER = "2200-7020-5664-8004"
 WEBAPP_URL = "https://up53et.github.io/vpn-shop-webapp/"
 PORT = int(os.environ.get("PORT", 8080))
 # ===============================
@@ -21,8 +22,7 @@ logging.basicConfig(level=logging.INFO)
 async def init_db():
     async with aiosqlite.connect('shop.db') as db:
         await db.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
-            registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT)''')
         await db.execute('''CREATE TABLE IF NOT EXISTS purchases (
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
             product TEXT, amount REAL, status TEXT DEFAULT 'pending',
@@ -49,11 +49,6 @@ async def add_purchase(user_id, product, amount, phone='', address='', full_name
             (user_id, product, amount, phone, address, full_name, protocol, os, duration, country))
         await db.commit()
         return cursor.lastrowid
-
-async def update_purchase_status(order_id, status):
-    async with aiosqlite.connect('shop.db') as db:
-        await db.execute('UPDATE purchases SET status=? WHERE id=?', (status, order_id))
-        await db.commit()
 
 async def get_available_key(protocol, country):
     async with aiosqlite.connect('shop.db') as db:
@@ -83,24 +78,17 @@ async def get_user_subscriptions(user_id):
 
 # ========== HTTP-СЕРВЕР ==========
 async def handle_healthcheck(reader, writer):
-    try:
-        await asyncio.wait_for(reader.read(1024), timeout=2.0)
-    except:
-        pass
+    try: await asyncio.wait_for(reader.read(1024), timeout=2.0)
+    except: pass
     body = b"OK"
-    response = (
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
-        b"Content-Length: " + str(len(body)).encode() + b"\r\n"
-        b"Connection: close\r\n\r\n" + body
-    )
+    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body
     writer.write(response)
     await writer.drain()
     writer.close()
 
 async def run_healthcheck_server():
     server = await asyncio.start_server(handle_healthcheck, "0.0.0.0", PORT)
-    async with server:
-        await server.serve_forever()
+    async with server: await server.serve_forever()
 
 # ========== ОБРАБОТЧИКИ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,7 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Привет, {user.first_name}!\n\n🛒 NetVault — роутеры и VPN\n\n"
         f"📡 Роутер NC-1121 — 9800₽\n🌐 VLESS — 300₽/мес\n"
         f"🔒 WireGuard — 350₽/мес\n🛡️ AmneziaWG — 350₽/мес\n\n"
-        f"Нажми кнопку чтобы открыть магазин:",
+        f"💳 Оплата переводом на карту\n\nНажми кнопку чтобы открыть магазин:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🛍️ Открыть магазин", web_app=WebAppInfo(url=WEBAPP_URL))]
         ])
@@ -134,17 +122,13 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         order_id = await add_purchase(user.id, 'router_nc1121', amount, phone, address, full_name)
         
         await update.message.reply_text(
-            f"✅ *Заказ №{order_id}*\n\n📡 Роутер NC-1121\n👤 {full_name}\n📞 {phone}\n📍 {address}\n💰 {amount} XTR",
+            f"✅ *Заказ №{order_id}*\n\n📡 Роутер NC-1121\n👤 {full_name}\n📞 {phone}\n📍 {address}\n💰 {amount}₽\n\n"
+            f"💳 Оплатите переводом на карту:\n`{CARD_NUMBER}`\n\n"
+            f"⚠️ После оплаты напишите {ADMIN_USERNAME} номер заказа",
             parse_mode='Markdown'
         )
-        await context.bot.send_invoice(
-            chat_id=user.id, title="Роутер Netcraze NC-1121",
-            description=f"Заказ №{order_id}\n👤 {full_name}\n📍 {address}",
-            payload=f"router_{order_id}", provider_token="", currency="XTR",
-            prices=[LabeledPrice("Роутер NC-1121", amount)]
-        )
         await context.bot.send_message(ADMIN_ID,
-            f"🔔 *Новый заказ №{order_id}*\n📡 Роутер\n👤 {full_name}\n📞 {phone}\n📍 {address}\n💰 {amount} XTR",
+            f"🔔 *Новый заказ №{order_id}*\n📡 Роутер\n👤 {full_name}\n📞 {phone}\n📍 {address}\n💰 {amount}₽\nСтатус: ожидает оплату",
             parse_mode='Markdown'
         )
     
@@ -161,89 +145,75 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         protocol_names = {'vless':'VLESS','wireguard':'WireGuard','amneziawg':'AmneziaWG'}
         
         await update.message.reply_text(
-            f"✅ *Заказ №{order_id}*\n\n🔐 {protocol_names[protocol]}\n🌍 {country}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n💰 {amount} XTR",
+            f"✅ *Заказ №{order_id}*\n\n🔐 {protocol_names[protocol]}\n🌍 {country}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n💰 {amount}₽\n\n"
+            f"💳 Оплатите переводом на карту:\n`{CARD_NUMBER}`\n\n"
+            f"⚠️ После оплаты ключ придёт автоматически",
             parse_mode='Markdown'
-        )
-        await context.bot.send_invoice(
-            chat_id=user.id, title=f"{protocol_names[protocol]} VPN",
-            description=f"Страна: {country}\nОС: {os_names[os_choice]}\nСрок: {duration_name}",
-            payload=f"vpn_{order_id}_{protocol}_{duration}_{country}",
-            provider_token="", currency="XTR",
-            prices=[LabeledPrice(f"{protocol_names[protocol]} ({duration_name})", amount)]
         )
         await context.bot.send_message(ADMIN_ID,
-            f"🔔 *Новый заказ №{order_id}*\n🔐 {protocol_names[protocol]}\n🌍 {country}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n💰 {amount} XTR",
-            parse_mode='Markdown'
-        )
-
-async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.pre_checkout_query.answer(ok=True)
-
-async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    payment = update.message.successful_payment
-    user = update.effective_user
-    payload = payment.invoice_payload
-    
-    if payload.startswith('router_'):
-        order_id = int(payload.replace('router_', ''))
-        await update_purchase_status(order_id, 'paid')
-        await update.message.reply_text(f"✅ *Оплата прошла!*\n\n📦 Заказ №{order_id}\n📡 Роутер NC-1121\n\n📞 {ADMIN_USERNAME} свяжется с вами", parse_mode='Markdown')
-    
-    elif payload.startswith('vpn_'):
-        parts = payload.split('_')
-        order_id = int(parts[1])
-        protocol = parts[2]
-        duration = parts[3]
-        country = parts[4]
-        await update_purchase_status(order_id, 'paid')
-        
-        duration_days = {'1month':30,'3months':90,'6months':180,'1year':365}
-        days = duration_days.get(duration, 30)
-        expires_at = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-        
-        key = await get_available_key(protocol, country)
-        protocol_names = {'vless':'VLESS','wireguard':'WireGuard','amneziawg':'AmneziaWG'}
-        
-        if key:
-            await mark_key_sold(key[0], user.id, expires_at)
-            key_text = key[1]
-        else:
-            key_text = f"Ключи закончились. {ADMIN_USERNAME} выдаст вручную"
-            await context.bot.send_message(ADMIN_ID, f"⚠️ Закончились ключи {protocol} ({country})!\nЗаказ №{order_id}")
-        
-        await update.message.reply_text(
-            f"✅ *Оплата прошла!*\n\n📦 Заказ №{order_id}\n🔐 {protocol_names[protocol]}\n🌍 {country}\n⏱️ До: {expires_at}\n\n🔑 Ключ:\n`{key_text}`\n\n📞 {ADMIN_USERNAME}",
+            f"🔔 *Новый заказ №{order_id}*\n🔐 {protocol_names[protocol]}\n🌍 {country}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n💰 {amount}₽\nСтатус: ожидает оплату",
             parse_mode='Markdown'
         )
 
 # ========== АДМИН-КОМАНДЫ ==========
 async def addkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+    if update.effective_user.id != ADMIN_ID: return
     args = context.args
     if len(args) < 3:
-        await update.message.reply_text("❌ Использование: /addkey протокол Страна ключ\nПример: /addkey vless Армения vless://...")
+        await update.message.reply_text("❌ /addkey протокол Страна ключ\nПример: /addkey vless Армения vless://...")
         return
-    protocol = args[0]
-    country = args[1]
-    key_data = ' '.join(args[2:])
-    await add_vpn_key(protocol, country, key_data)
-    await update.message.reply_text(f"✅ Ключ {protocol} ({country}) добавлен!")
+    await add_vpn_key(args[0], args[1], ' '.join(args[2:]))
+    await update.message.reply_text(f"✅ Ключ {args[0]} ({args[1]}) добавлен!")
+
+async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтвердить оплату и выдать ключ: /done номер_заказа"""
+    if update.effective_user.id != ADMIN_ID: return
+    args = context.args
+    if len(args) < 1:
+        await update.message.reply_text("❌ /done номер_заказа")
+        return
+    
+    order_id = int(args[0])
+    
+    async with aiosqlite.connect('shop.db') as db:
+        c = await db.execute('SELECT user_id, product, protocol, country, duration FROM purchases WHERE id=?', (order_id,))
+        order = await c.fetchone()
+    
+    if not order:
+        await update.message.reply_text("❌ Заказ не найден")
+        return
+    
+    user_id, product, protocol, country, duration = order
+    
+    if 'router' in product:
+        await db.execute('UPDATE purchases SET status="paid" WHERE id=?', (order_id,))
+        await db.commit()
+        await context.bot.send_message(user_id, f"✅ Заказ №{order_id} оплачен! {ADMIN_USERNAME} свяжется для доставки.")
+        await update.message.reply_text(f"✅ Заказ №{order_id} отмечен как оплаченный")
+    else:
+        duration_days = {'1month':30,'3months':90,'6months':180,'1year':365}
+        days = duration_days.get(duration, 30)
+        expires_at = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        key = await get_available_key(protocol, country)
+        if key:
+            await mark_key_sold(key[0], user_id, expires_at)
+            await db.execute('UPDATE purchases SET status="paid" WHERE id=?', (order_id,))
+            await db.commit()
+            await context.bot.send_message(user_id, f"✅ Заказ №{order_id} оплачен!\n\n🔑 Ваш ключ:\n`{key[1]}`\n⏱️ До: {expires_at}", parse_mode='Markdown')
+            await update.message.reply_text(f"✅ Ключ {protocol} ({country}) выдан пользователю {user_id}")
+        else:
+            await update.message.reply_text(f"❌ Нет ключей {protocol} ({country})!")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+    if update.effective_user.id != ADMIN_ID: return
     async with aiosqlite.connect('shop.db') as db:
-        c = await db.execute('SELECT COUNT(*) FROM users')
-        users = (await c.fetchone())[0]
-        c = await db.execute('SELECT COUNT(*), SUM(amount) FROM purchases WHERE status="paid"')
-        orders, rev = await c.fetchone()
-        c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=FALSE')
-        keys = (await c.fetchone())[0]
-        c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=TRUE AND expires_at > datetime("now")')
-        active = (await c.fetchone())[0]
+        c = await db.execute('SELECT COUNT(*) FROM users'); users = (await c.fetchone())[0]
+        c = await db.execute('SELECT COUNT(*), SUM(amount) FROM purchases WHERE status="paid"'); orders, rev = await c.fetchone()
+        c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=FALSE'); keys = (await c.fetchone())[0]
+        c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=TRUE AND expires_at > datetime("now")'); active = (await c.fetchone())[0]
     await update.message.reply_text(
-        f"📊 *Статистика*\n\n👥 Пользователей: {users}\n🛒 Заказов: {orders or 0}\n💰 Выручка: {rev or 0} XTR\n🔑 Ключей: {keys}\n✅ Активных: {active}",
+        f"📊 *Статистика*\n\n👥 Пользователей: {users}\n🛒 Заказов: {orders or 0}\n💰 Выручка: {rev or 0}₽\n🔑 Ключей: {keys}\n✅ Активных: {active}",
         parse_mode='Markdown'
     )
 
@@ -251,10 +221,8 @@ async def mysubs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subs = await get_user_subscriptions(update.effective_user.id)
     if subs:
         text = "🔑 *Ваши подписки:*\n\n"
-        for s in subs:
-            text += f"🔐 {s[0]} ({s[1]})\n⏱️ До: {s[2]}\n🔑 `{s[3]}`\n\n"
-    else:
-        text = "У вас нет активных подписок"
+        for s in subs: text += f"🔐 {s[0]} ({s[1]})\n⏱️ До: {s[2]}\n🔑 `{s[3]}`\n\n"
+    else: text = "У вас нет активных подписок"
     await update.message.reply_text(text, parse_mode='Markdown')
 
 # ========== ЗАПУСК ==========
@@ -265,19 +233,17 @@ async def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addkey", addkey))
+    app.add_handler(CommandHandler("done", done))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("mysubs", mysubs))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
-    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     
     await app.initialize()
     await app.start()
     print("🤖 Бот запущен!")
     await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
     
-    while True:
-        await asyncio.sleep(3600)
+    while True: await asyncio.sleep(3600)
 
 if __name__ == '__main__':
     asyncio.run(main())
