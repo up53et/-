@@ -352,11 +352,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif d.startswith('approve_'):
             oid = int(d.replace('approve_', ''))
-            await approve_order(update, context, oid)
+            await approve_order(q, context, oid)
             return
         elif d.startswith('reject_'):
             oid = int(d.replace('reject_', ''))
-            await reject_order(update, context, oid)
+            await reject_order(q, context, oid)
             return
         elif d.startswith('ext_key_'):
             key_id = int(d.replace('ext_key_', ''))
@@ -366,11 +366,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif d.startswith('ext_'):
             days = int(d.replace('ext_', ''))
-            await do_extend(update, context, days)
+            await do_extend(q, context, days)
             return
         elif d.startswith('red_'):
             days = -int(d.replace('red_', ''))
-            await do_extend(update, context, days)
+            await do_extend(q, context, days)
             return
     
     # ОБЫЧНЫЕ
@@ -414,8 +414,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == 'help':
         await q.message.edit_text(f"ℹ️ {BOT_NAME}\n📡 {ROUTER_PRICE}р\n🌐 {PRICES['vless']}р\n🔒 {PRICES['wireguard']}р\n🛡️ {PRICES['amneziawg']}р\n📞 {ADMIN_USERNAME}\n🆔 Ваш ID: {pid}", reply_markup=main_menu(u.id))
 
-async def do_extend(update, context, days):
-    q = update.callback_query
+async def do_extend(q, context, days):
     key_id = context.user_data.get('ext_key_id')
     if not key_id: return
     
@@ -430,51 +429,63 @@ async def do_extend(update, context, days):
     text = f"✅ Подписка изменена!\nДо: {format_date(new_exp) if result else '?'}\n{label if result else ''}"
     await q.message.edit_text(text, reply_markup=admin_main_kb())
 
-async def approve_order(update, context, oid):
-    q = update.callback_query
+async def approve_order(q, context, oid):
     o = await get_purchase(oid)
-    if not o: 
-        await q.answer("Не найден", show_alert=True)
+    if not o:
+        await q.answer("Заказ не найден", show_alert=True)
         return
-    uid, prod = o[1], o[2]
+    
+    uid = o[1]
+    prod = o[2]
     pid = await get_or_create_pid(uid, None, None)
     
     if 'router' in prod:
         await update_purchase_status(oid, 'paid')
         await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен! {ADMIN_USERNAME} свяжется.")
         await q.message.edit_text(q.message.text + "\n\n✅ ОДОБРЕНО", reply_markup=None)
+        await q.answer("✅ Заказ одобрен!", show_alert=True)
     else:
-        p = o[6] or prod.replace('vpn_','')
-        c = o[7] or 'Нидерланды'
-        dur = o[8] or '1month'
-        days = DURATION_DAYS.get(dur, 30)
+        # VPN заказ - берём протокол и страну из заказа
+        protocol = o[6]
+        country = o[7]
+        duration = o[8]
+        
+        if not protocol:
+            protocol = prod.replace('vpn_', '')
+        if not country:
+            country = 'Нидерланды'
+        if not duration:
+            duration = '1month'
+        
+        days = DURATION_DAYS.get(duration, 30)
         exp = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-        key = await get_key(p, c)
+        
+        key = await get_key(protocol, country)
         if key:
             await sell_key(key[0], uid, pid, exp)
             await update_purchase_status(oid, 'paid')
             await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!\n\n🔑 Ключ:\n{key[1]}\n⏱️ До: {format_date(exp)}")
             await q.message.edit_text(q.message.text + "\n\n✅ Ключ выдан!", reply_markup=None)
+            await q.answer("✅ Ключ выдан!", show_alert=True)
         else:
-            await q.answer("❌ Нет ключей!", show_alert=True)
+            await q.answer(f"❌ Нет ключей {PROTOCOL_NAMES.get(protocol, protocol)} ({country})!", show_alert=True)
 
-async def reject_order(update, context, oid):
-    q = update.callback_query
+async def reject_order(q, context, oid):
     o = await get_purchase(oid)
-    if not o: 
-        await q.answer("Не найден", show_alert=True)
+    if not o:
+        await q.answer("Заказ не найден", show_alert=True)
         return
     uid = o[1]
     await update_purchase_status(oid, 'rejected')
     await context.bot.send_message(uid, f"❌ Заказ №{oid} отклонён. Свяжитесь с {ADMIN_USERNAME}")
     await q.message.edit_text(q.message.text + "\n\n❌ ОТКЛОНЕНО", reply_markup=None)
+    await q.answer("❌ Заказ отклонён", show_alert=True)
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     t = update.message.text
     pid = await get_or_create_pid(u.id, u.username, u.first_name)
     
-    # Админ добавляет ключ
     if u.id == ADMIN_ID and context.user_data.get('admin_add'):
         info = context.user_data['admin_add']
         await add_key(info['protocol'], info['country'], t.strip())
@@ -483,7 +494,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Ключ добавлен!\n{text}", reply_markup=kb)
         return
     
-    # Админ добавляет страну
     if u.id == ADMIN_ID and context.user_data.get('add_country'):
         p = context.user_data['add_country']
         await add_country(p, t.strip())
@@ -491,7 +501,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ {t.strip()} добавлена!", reply_markup=await admin_country_manage_kb(p))
         return
     
-    # Админ вводит ID для продления/отнятия
     if u.id == ADMIN_ID and context.user_data.get('ext_step') == 'input_pid':
         try:
             target_pid = int(t.strip())
@@ -515,7 +524,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Числовой ID")
         return
     
-    # Заказ роутера
     if context.user_data.get('wait') == 'router':
         p = t.strip().split('\n')
         if len(p) >= 3:
@@ -581,10 +589,8 @@ async def mysubs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subs = await get_subs_by_uid(update.effective_user.id)
     if subs:
         text = f"🔑 Подписки (ID: {pid}):\n\n"
-        for s in subs:
-            text += f"🔐 {PROTOCOL_NAMES.get(s[1],s[1])} ({s[2]})\n⏱️ До: {format_date(s[3])}\n"
-    else:
-        text = f"Нет подписок\nID: {pid}"
+        for s in subs: text += f"🔐 {PROTOCOL_NAMES.get(s[1],s[1])} ({s[2]})\n⏱️ До: {format_date(s[3])}\n"
+    else: text = f"Нет подписок\nID: {pid}"
     await update.message.reply_text(text)
 
 # ========== ЗАПУСК ==========
@@ -601,12 +607,10 @@ async def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    await app.initialize()
-    await app.start()
+    await app.initialize(); await app.start()
     print("🤖 Бот запущен!")
     await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-    while True:
-        await asyncio.sleep(3600)
+    while True: await asyncio.sleep(3600)
 
 if __name__ == '__main__':
     asyncio.run(main())
