@@ -319,6 +319,12 @@ async def main():
     while True:
         await asyncio.sleep(1)
 
+import sys
+
 if __name__ == '__main__':
+    # Создаём event loop для Python 3.12+
+    if sys.version_info >= (3, 12):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
     asyncio.run(init_db())
     asyncio.run(main())
