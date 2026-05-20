@@ -564,20 +564,28 @@ async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_purchase_status(oid, 'paid')
         await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!")
         await update.message.reply_text("✅ Оплачен")
+        return
+    
+    # VPN — берём данные из БД
+async with aiosqlite.connect('shop.db') as db:
+        c = await db.execute('SELECT protocol, country, duration FROM purchases WHERE id=?', (oid,))
+        row = await c.fetchone()
+    
+    protocol = row[0] if row and row[0] else prod.replace('vpn_', '')
+    country = row[1] if row and row[1] else 'Нидерланды'
+    duration = row[2] if row and row[2] else '1month'
+    
+    days = DURATION_DAYS.get(duration, 30)
+    exp = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    key = await get_key(protocol, country)
+    
+    if key:
+        await sell_key(key[0], uid, pid, exp)
+        await update_purchase_status(oid, 'paid')
+        await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!\n\n🔑 Ключ:\n{key[1]}\n⏱️ До: {format_date(exp)}")
+        await update.message.reply_text(f"✅ Ключ {protocol} ({country}) выдан!")
     else:
-        p = o[6] or prod.replace('vpn_','')
-        c = o[7] or 'Нидерланды'
-        dur = o[8] or '1month'
-        days = DURATION_DAYS.get(dur, 30)
-        exp = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-        key = await get_key(p, c)
-        if key:
-            await sell_key(key[0], uid, pid, exp)
-            await update_purchase_status(oid, 'paid')
-            await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!\n\n🔑 Ключ:\n{key[1]}\n⏱️ До: {format_date(exp)}")
-            await update.message.reply_text("✅ Ключ выдан!")
-        else:
-            await update.message.reply_text(f"❌ Нет ключей {p} ({c})!")
+        await update.message.reply_text(f"❌ Нет ключей {protocol} ({country})!\nДобавьте: /addkey {protocol} {country} КЛЮЧ")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
