@@ -12,8 +12,10 @@ BOT_TOKEN = "8809011538:AAFMpc0vBtMMHS0ZbXpjDbPmFkWfxW_jHtM"
 ADMIN_ID = 5737961034
 ADMIN_USERNAME = "@yng_beko"
 CARD_NUMBER = "2200-7020-5664-8004"
-WEBAPP_URL = "https://up53et.github.io/vpn-shop-webapp/"
 PORT = int(os.environ.get("PORT", 8080))
+# URL твоего сервиса на Render
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://rh715clfb2.onrender.com")
+WEBAPP_URL = RENDER_URL + "/"
 # ===============================
 
 logging.basicConfig(level=logging.INFO)
@@ -76,20 +78,33 @@ async def get_user_subscriptions(user_id):
             (user_id,))
         return await cursor.fetchall()
 
-# ========== HTTP-СЕРВЕР ==========
-async def handle_healthcheck(reader, writer):
+# ========== HTTP-СЕРВЕР (ОТДАЁТ index.html) ==========
+async def handle_request(reader, writer):
     try:
-        await asyncio.wait_for(reader.read(1024), timeout=2.0)
+        await asyncio.wait_for(reader.read(4096), timeout=2.0)
     except:
         pass
-    body = b"OK"
-    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body
+    
+    try:
+        with open("static/index.html", "rb") as f:
+            html = f.read()
+    except:
+        html = b"<h1>WebApp not found</h1>"
+    
+    response = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"Content-Length: " + str(len(html)).encode() + b"\r\n"
+        b"Connection: close\r\n"
+        b"\r\n" + html
+    )
     writer.write(response)
     await writer.drain()
     writer.close()
 
-async def run_healthcheck_server():
-    server = await asyncio.start_server(handle_healthcheck, "0.0.0.0", PORT)
+async def run_server():
+    server = await asyncio.start_server(handle_request, "0.0.0.0", PORT)
+    logging.info(f"WebApp server started on port {PORT}")
     async with server:
         await server.serve_forever()
 
@@ -112,7 +127,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE, data_str: str):
-    """Обрабатывает заказ из WebApp данных"""
     data = json.loads(data_str)
     user = update.effective_user
     await register_user(user.id, user.username, user.first_name)
@@ -129,24 +143,14 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE, data
         await update.message.reply_text(
             f"✅ *Заказ №{order_id}*\n\n"
             f"📡 Роутер NC-1121\n"
-            f"👤 {full_name}\n"
-            f"📞 {phone}\n"
-            f"📍 {address}\n"
+            f"👤 {full_name}\n📞 {phone}\n📍 {address}\n"
             f"💰 Сумма: {amount}₽\n\n"
-            f"💳 Оплатите переводом на карту:\n"
-            f"`{CARD_NUMBER}`\n\n"
+            f"💳 Оплатите переводом на карту:\n`{CARD_NUMBER}`\n\n"
             f"⚠️ После оплаты напишите {ADMIN_USERNAME} номер заказа",
             parse_mode='Markdown'
         )
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"🔔 *Новый заказ №{order_id}*\n\n"
-            f"📡 Роутер NC-1121\n"
-            f"👤 {full_name}\n"
-            f"📞 {phone}\n"
-            f"📍 {address}\n"
-            f"💰 {amount}₽\n"
-            f"Статус: ожидает оплату",
+        await context.bot.send_message(ADMIN_ID,
+            f"🔔 *Новый заказ №{order_id}*\n\n📡 Роутер\n👤 {full_name}\n📞 {phone}\n📍 {address}\n💰 {amount}₽",
             parse_mode='Markdown'
         )
     
@@ -164,37 +168,23 @@ async def process_order(update: Update, context: ContextTypes.DEFAULT_TYPE, data
         
         await update.message.reply_text(
             f"✅ *Заказ №{order_id}*\n\n"
-            f"🔐 {protocol_names[protocol]}\n"
-            f"🌍 {country}\n"
-            f"🖥️ {os_names[os_choice]}\n"
-            f"⏱️ {duration_name}\n"
+            f"🔐 {protocol_names[protocol]}\n🌍 {country}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n"
             f"💰 Сумма: {amount}₽\n\n"
-            f"💳 Оплатите переводом на карту:\n"
-            f"`{CARD_NUMBER}`\n\n"
+            f"💳 Оплатите переводом на карту:\n`{CARD_NUMBER}`\n\n"
             f"⚠️ После оплаты ключ придёт автоматически",
             parse_mode='Markdown'
         )
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"🔔 *Новый заказ №{order_id}*\n\n"
-            f"🔐 {protocol_names[protocol]}\n"
-            f"🌍 {country}\n"
-            f"🖥️ {os_names[os_choice]}\n"
-            f"⏱️ {duration_name}\n"
-            f"💰 {amount}₽\n"
-            f"Статус: ожидает оплату",
+        await context.bot.send_message(ADMIN_ID,
+            f"🔔 *Новый заказ №{order_id}*\n\n🔐 {protocol_names[protocol]}\n🌍 {country}\n🖥️ {os_names[os_choice]}\n⏱️ {duration_name}\n💰 {amount}₽",
             parse_mode='Markdown'
         )
 
 async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик WebApp данных (основной)"""
     if update.effective_message.web_app_data:
         await process_order(update, context, update.effective_message.web_app_data.data)
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик обычного текста (запасной для WebApp)"""
     text = update.message.text
-    # Пробуем распарсить JSON от WebApp
     if text.startswith('{') and '"type"' in text:
         try:
             await process_order(update, context, text)
@@ -213,7 +203,6 @@ async def addkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Ключ {args[0]} ({args[1]}) добавлен!")
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подтвердить оплату: /done номер_заказа"""
     if update.effective_user.id != ADMIN_ID:
         return
     args = context.args
@@ -250,11 +239,9 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async with aiosqlite.connect('shop.db') as db:
                 await db.execute('UPDATE purchases SET status="paid" WHERE id=?', (order_id,))
                 await db.commit()
-            await context.bot.send_message(
-                user_id,
+            await context.bot.send_message(user_id,
                 f"✅ Заказ №{order_id} оплачен!\n\n🔑 Ваш ключ:\n`{key[1]}`\n⏱️ До: {expires_at}",
-                parse_mode='Markdown'
-            )
+                parse_mode='Markdown')
             await update.message.reply_text(f"✅ Ключ {protocol} ({country}) выдан пользователю {user_id}")
         else:
             await update.message.reply_text(f"❌ Нет ключей {protocol} ({country})!")
@@ -263,21 +250,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     async with aiosqlite.connect('shop.db') as db:
-        c = await db.execute('SELECT COUNT(*) FROM users')
-        users = (await c.fetchone())[0]
-        c = await db.execute('SELECT COUNT(*), SUM(amount) FROM purchases WHERE status="paid"')
-        orders, rev = await c.fetchone()
-        c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=FALSE')
-        keys = (await c.fetchone())[0]
-        c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=TRUE AND expires_at > datetime("now")')
-        active = (await c.fetchone())[0]
+        c = await db.execute('SELECT COUNT(*) FROM users'); users = (await c.fetchone())[0]
+        c = await db.execute('SELECT COUNT(*), SUM(amount) FROM purchases WHERE status="paid"'); orders, rev = await c.fetchone()
+        c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=FALSE'); keys = (await c.fetchone())[0]
+        c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=TRUE AND expires_at > datetime("now")'); active = (await c.fetchone())[0]
     await update.message.reply_text(
-        f"📊 *Статистика*\n\n"
-        f"👥 Пользователей: {users}\n"
-        f"🛒 Заказов: {orders or 0}\n"
-        f"💰 Выручка: {rev or 0}₽\n"
-        f"🔑 Ключей: {keys}\n"
-        f"✅ Активных подписок: {active}",
+        f"📊 *Статистика*\n\n👥 Пользователей: {users}\n🛒 Заказов: {orders or 0}\n💰 Выручка: {rev or 0}₽\n🔑 Ключей: {keys}\n✅ Активных: {active}",
         parse_mode='Markdown'
     )
 
@@ -294,7 +272,7 @@ async def mysubs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЗАПУСК ==========
 async def main():
     await init_db()
-    asyncio.create_task(run_healthcheck_server())
+    asyncio.create_task(run_server())
     
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
