@@ -258,17 +258,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user(user.id, user.username, user.first_name)
     
     welcome = (
-        f"👋 *Добро пожаловать в {BOT_NAME}!*\n\n"
+        f"👋 Добро пожаловать в {BOT_NAME}!\n\n"
         f"🛒 Мы продаём:\n"
-        f"📡 Роутер Netcraze NC-1121 — *{ROUTER_PRICE}₽*\n"
-        f"🌐 VLESS — *{PRICES['vless']}₽/мес*\n"
-        f"🔒 WireGuard — *{PRICES['wireguard']}₽/мес*\n"
-        f"🛡️ AmneziaWG — *{PRICES['amneziawg']}₽/мес*\n\n"
-        f"💳 Оплата переводом: `{CARD_NUMBER}`\n"
+        f"📡 Роутер Netcraze NC-1121 — {ROUTER_PRICE}₽\n"
+        f"🌐 VLESS — {PRICES['vless']}₽/мес\n"
+        f"🔒 WireGuard — {PRICES['wireguard']}₽/мес\n"
+        f"🛡️ AmneziaWG — {PRICES['amneziawg']}₽/мес\n\n"
+        f"💳 Оплата переводом: {CARD_NUMBER}\n"
         f"📞 Поддержка: {ADMIN_USERNAME}\n\n"
         f"Выберите действие:"
     )
-    await update.message.reply_text(welcome, parse_mode='Markdown', reply_markup=main_menu(user.id))
+    await update.message.reply_text(welcome, reply_markup=main_menu(user.id))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
