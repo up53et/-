@@ -3,7 +3,7 @@ import aiosqlite
 import json
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, LabeledPrice
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, PreCheckoutQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, PreCheckoutQueryHandler, ContextTypes
 import logging
 
 # ========== НАСТРОЙКИ ==========
@@ -81,7 +81,6 @@ async def get_user_subscriptions(user_id):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await register_user(user.id, user.username, user.first_name)
-    
     await update.message.reply_text(
         f"👋 Привет, {user.first_name}!\n\n🛒 Добро пожаловать в NetVault!\n\nНажмите кнопку чтобы открыть магазин:",
         reply_markup=InlineKeyboardMarkup([
@@ -101,7 +100,6 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         phone = data.get('phone')
         address = data.get('address')
         amount = data.get('amount', 9800)
-        
         order_id = await add_purchase(user.id, 'router_nc1121', amount, phone, address, full_name)
         
         await context.bot.send_invoice(
@@ -113,12 +111,10 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             currency="XTR",
             prices=[LabeledPrice("Роутер NC-1121", amount)]
         )
-        
         await update.message.reply_text(
             f"✅ *Заказ №{order_id} оформлен!*\n\n📡 Роутер NC-1121\n👤 {full_name}\n📞 {phone}\n📍 {address}\n💰 {amount} XTR\n\n💳 Оплатите счёт выше ☝️",
             parse_mode='Markdown'
         )
-        
         await context.bot.send_message(
             ADMIN_ID,
             f"🔔 *Новый заказ №{order_id}*\n\n📡 Роутер\n👤 {full_name}\n📞 {phone}\n📍 {address}\n💰 {amount} XTR\n👤 @{user.username or 'нет'} (ID: {user.id})",
@@ -131,7 +127,6 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         duration = data.get('duration')
         duration_name = data.get('durationName')
         amount = data.get('amount')
-        
         order_id = await add_purchase(user.id, f'vpn_{protocol}', amount, protocol=protocol, os=os, duration=duration)
         
         os_names = {'linux': '🐧 Linux', 'ios': '🍎 iOS', 'windows': '🪟 Windows', 'android': '📱 Android'}
@@ -146,12 +141,10 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             currency="XTR",
             prices=[LabeledPrice(f"{protocol_names[protocol]} ({duration_name})", amount)]
         )
-        
         await update.message.reply_text(
             f"✅ *Заказ №{order_id} оформлен!*\n\n🔐 {protocol_names[protocol]}\n🖥️ {os_names[os]}\n⏱️ {duration_name}\n💰 {amount} XTR\n\n💳 Оплатите счёт выше ☝️",
             parse_mode='Markdown'
         )
-        
         await context.bot.send_message(
             ADMIN_ID,
             f"🔔 *Новый заказ №{order_id}*\n\n🔐 {protocol_names[protocol]} VPN\n🖥️ {os_names[os]}\n⏱️ {duration_name}\n💰 {amount} XTR\n👤 @{user.username or 'нет'} (ID: {user.id})",
@@ -173,13 +166,11 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"✅ *Оплата прошла!*\n\n📦 Заказ №{order_id}\n📡 Роутер NC-1121\n\n📞 {ADMIN_USERNAME} свяжется с вами",
             parse_mode='Markdown'
         )
-    
     elif payload.startswith('vpn_'):
         parts = payload.split('_')
         order_id = int(parts[1])
         protocol = parts[2]
         duration = parts[3]
-        
         await update_purchase_status(order_id, 'paid')
         
         duration_days = {'1month': 30, '3months': 90, '6months': 180, '1year': 365}
@@ -188,7 +179,6 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         key = await get_available_key(protocol)
         protocol_names = {'vless': 'VLESS', 'wireguard': 'WireGuard', 'amneziawg': 'AmneziaWG'}
-        
         if key:
             await mark_key_sold(key[0], user.id, expires_at)
             key_text = key[1]
@@ -201,7 +191,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode='Markdown'
         )
 
-# ========== АДМИН КОМАНДЫ ==========
+# ========== АДМИН-КОМАНДЫ ==========
 async def addkey(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -224,7 +214,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keys = (await c.fetchone())[0]
         c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE is_sold=TRUE AND expires_at > datetime("now")')
         active = (await c.fetchone())[0]
-    
     await update.message.reply_text(
         f"📊 *Статистика*\n\n👥 Пользователей: {users}\n🛒 Заказов: {orders or 0}\n💰 Выручка: {rev or 0} XTR\n🔑 Ключей: {keys}\n✅ Активных подписок: {active}",
         parse_mode='Markdown'
@@ -240,7 +229,7 @@ async def mysubs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "У вас нет активных подписок"
     await update.message.reply_text(text, parse_mode='Markdown')
 
-# ========== ЗАПУСК ==========
+# ========== ЗАПУСК (РАБОЧИЙ ВАРИАНТ ДЛЯ RENDER) ==========
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
     
@@ -252,8 +241,16 @@ async def main():
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     
+    await app.initialize()
+    await app.start()
     print("🤖 Бот запущен!")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Ручной запуск поллинга без блокировки event loop
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Держим процесс живым
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == '__main__':
     asyncio.run(init_db())
