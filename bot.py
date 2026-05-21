@@ -9,7 +9,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 import logging
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = os.environ.get("BOT_TOKEN")   # замени на свой токен или используй переменную окружения
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 5737961034
 ADMIN_USERNAME = "@yng_beko"
 CARD_INFO = "2200-7020-5664-8004 (Игорь Д.)"
@@ -17,7 +17,7 @@ PORT = int(os.environ.get("PORT", 8080))
 BOT_NAME = "NetVault"
 
 # Gist Backup
-GIST_TOKEN = os.environ.get("GIST_TOKEN")   # замени на переменную окружения
+GIST_TOKEN = os.environ.get("GIST_TOKEN")
 GIST_ID = "63fb67d2ba3f326f99a9048d42f3b5f6"
 GIST_FILENAME = "shop_backup.txt"
 
@@ -180,7 +180,6 @@ async def check_expired_subscriptions(app, admin_id):
         await asyncio.sleep(3600)
         try:
             async with aiosqlite.connect('shop.db') as db:
-                # Теперь всегда получаем personal_id, даже если в vpn_keys его нет (берём из users)
                 c = await db.execute(
                     """SELECT v.sold_to, v.protocol, v.country, COALESCE(v.personal_id, u.personal_id) as pid
                        FROM vpn_keys v
@@ -443,6 +442,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"✅ Заказ №{oid}\n\n🔐 {PROTOCOL_NAMES[p]}\n🌍 {c}\n⏱️ {DURATION_NAMES[dur]}\n💰 {price}р\n\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}\n💳 {CARD_INFO}"
         await q.message.edit_text(text, reply_markup=main_menu(u.id))
         await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n{p} {c}\n💰 {price}р\n👤 @{u.username or u.id} (ID: {pid})", reply_markup=order_admin_kb(oid))
+        asyncio.create_task(backup_database())   # <-- мгновенный бекап
     elif d == 'my_subs':
         subs=await get_subs_by_uid(u.id)
         if subs: text=f"🔑 Подписки (ID: {pid}):\n\n"+"\n".join([f"🔐 {PROTOCOL_NAMES.get(s[1],s[1])} ({s[2]})\n⏱️ До: {format_date(s[3])}\n🔑 {s[4][:40]}...\n" for s in subs])
@@ -464,7 +464,9 @@ async def approve_order(q, context, oid):
     if 'router' in prod:
         await update_purchase_status(oid, 'paid')
         await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен! {ADMIN_USERNAME} свяжется для доставки.")
-        await q.message.edit_text(q.message.text + "\n\n✅ ОДОБРЕНО", reply_markup=None); return
+        await q.message.edit_text(q.message.text + "\n\n✅ ОДОБРЕНО", reply_markup=None)
+        asyncio.create_task(backup_database())   # <-- мгновенный бекап
+        return
     protocol = o[8] if len(o) > 8 and o[8] else None
     country = o[9] if len(o) > 9 and o[9] else None
     duration = o[10] if len(o) > 10 and o[10] else '1month'
@@ -477,6 +479,7 @@ async def approve_order(q, context, oid):
         await sell_key(key[0], uid, pid, exp); await update_purchase_status(oid, 'paid')
         await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!\n\n🔑 Ключ:\n{key[1]}\n⏱️ До: {format_date(exp)}")
         await q.message.edit_text(q.message.text + "\n\n✅ Ключ выдан!", reply_markup=None)
+        asyncio.create_task(backup_database())   # <-- мгновенный бекап
     else:
         await q.answer(f"❌ Нет ключей {protocol} ({country})!", show_alert=True)
 
@@ -486,6 +489,7 @@ async def reject_order(q, context, oid):
     await update_purchase_status(oid, 'rejected')
     await context.bot.send_message(o[1], f"❌ Заказ №{oid} отклонён. Свяжитесь с {ADMIN_USERNAME}")
     await q.message.edit_text(q.message.text + "\n\n❌ ОТКЛОНЕНО", reply_markup=None)
+    asyncio.create_task(backup_database())   # <-- мгновенный бекап
 
 # ========== ТЕКСТОВЫЕ КОМАНДЫ ==========
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -495,10 +499,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u.id == ADMIN_ID and context.user_data.get('admin_add'):
         info = context.user_data['admin_add']; await add_key(info['protocol'], info['country'], t)
         context.user_data.pop('admin_add'); text, kb = await admin_country_menu(info['protocol'], info['country'])
-        await update.message.reply_text(f"✅ Ключ добавлен!\n{text}", reply_markup=kb); return
+        await update.message.reply_text(f"✅ Ключ добавлен!\n{text}", reply_markup=kb)
+        asyncio.create_task(backup_database())   # <-- мгновенный бекап
+        return
     if u.id == ADMIN_ID and context.user_data.get('add_country'):
         p = context.user_data['add_country']; await add_country(p, t)
-        context.user_data.pop('add_country'); await update.message.reply_text(f"✅ {t} добавлена!", reply_markup=await admin_country_manage_kb(p)); return
+        context.user_data.pop('add_country'); await update.message.reply_text(f"✅ {t} добавлена!", reply_markup=await admin_country_manage_kb(p))
+        asyncio.create_task(backup_database())   # <-- мгновенный бекап
+        return
     if u.id == ADMIN_ID and context.user_data.get('edit_step') == 'input_pid':
         try:
             target_pid = int(t)
@@ -522,6 +530,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sign = "+" if days >= 0 else ""
                     await context.bot.send_message(uid, f"📅 Подписка изменена!\n🔑 Ключ ID: {key_id}\n⏱️ До: {format_date(new_exp)}\n📅 {sign}{days} дн.")
                 await update.message.reply_text(f"✅ Изменено на {sign}{days} дн.", reply_markup=admin_main_kb())
+                asyncio.create_task(backup_database())   # <-- мгновенный бекап
             context.user_data.pop('edit_key_id', None); context.user_data.pop('edit_step', None)
         except: await update.message.reply_text("❌ Введите число (+7 или -3)"); return
 
@@ -545,6 +554,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu(u.id)
         )
         await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n📡 {model}\n👤 {name}\n💰 {total}р\nID: {pid}", reply_markup=order_admin_kb(oid))
+        asyncio.create_task(backup_database())   # <-- мгновенный бекап
         context.user_data['wait_router'] = None; context.user_data.pop('router_data', None); return
 
 # ========== КОМАНДЫ ==========
@@ -553,6 +563,7 @@ async def addkey_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     a = context.args
     if len(a) < 3: await update.message.reply_text("❌ /addkey протокол Страна ключ"); return
     await add_key(a[0], a[1], ' '.join(a[2:])); await update.message.reply_text(f"✅ {a[0]} ({a[1]})")
+    asyncio.create_task(backup_database())   # <-- мгновенный бекап
 
 async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -578,6 +589,7 @@ async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await sell_key(key[0], uid, pid, exp); await update_purchase_status(oid, 'paid')
         await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!\n\n🔑 Ключ:\n{key[1]}\n⏱️ До: {format_date(exp)}")
         await update.message.reply_text("✅ Ключ выдан!")
+        asyncio.create_task(backup_database())   # <-- мгновенный бекап
     else:
         await update.message.reply_text(f"❌ Нет ключей {protocol} ({country})!")
 
