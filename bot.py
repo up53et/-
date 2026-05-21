@@ -1,6 +1,7 @@
 import asyncio
 import aiosqlite
 import os
+import json
 import base64
 import aiohttp
 from datetime import datetime, timedelta
@@ -21,6 +22,35 @@ GIST_TOKEN = os.environ.get("GIST_TOKEN")
 GIST_ID = "63fb67d2ba3f326f99a9048d42f3b5f6"
 GIST_FILENAME = "shop_backup.txt"
 
+# ---------- Настройки по умолчанию ----------
+SETTINGS_FILE = "settings.json"
+DEFAULT_START_TEXT = (
+    "👋 {bot_name}!\n\n"
+    "🆔 Ваш ID: {pid}\n\n"
+    "📡 Роутеры от 7800р\n"
+    "🌐 VLESS - {vless_price}р/мес\n"
+    "🔒 WireGuard - {wg_price}р/мес\n"
+    "🛡️ AmneziaWG - {awg_price}р/мес\n\n"
+    "📞 {admin_username}"
+)
+DEFAULT_PRICES = {'vless': 400, 'wireguard': 450, 'amneziawg': 450}
+
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {'start_text': DEFAULT_START_TEXT, 'prices': DEFAULT_PRICES.copy()}
+
+def save_settings(settings):
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+# Загружаем настройки при старте
+settings = load_settings()
+PRICES = settings.get('prices', DEFAULT_PRICES.copy())
+START_TEXT_TEMPLATE = settings.get('start_text', DEFAULT_START_TEXT)
+
 logging.basicConfig(level=logging.INFO)
 
 # ---------- Роутеры ----------
@@ -33,7 +63,6 @@ ROUTERS = {
 }
 
 # ---------- VPN ----------
-PRICES = {'vless': 400, 'wireguard': 450, 'amneziawg': 450}
 PROTOCOL_NAMES = {'vless': 'VLESS', 'wireguard': 'WireGuard', 'amneziawg': 'AmneziaWG'}
 DURATION_NAMES = {'1month': '1 мес.', '3months': '3 мес.', '6months': '6 мес.', '1year': '1 год'}
 DURATION_DAYS = {'1month': 30, '3months': 90, '6months': 180, '1year': 365}
@@ -134,7 +163,6 @@ async def add_key(protocol, country, key_data):
         await db.commit()
 
 async def add_router_subscription(uid, pid, months):
-    """Создаёт запись о подписке на роутер в vpn_keys."""
     expires_at = (datetime.now() + timedelta(days=months*30)).strftime('%Y-%m-%d %H:%M:%S')
     async with aiosqlite.connect('shop.db') as db:
         await db.execute(
@@ -174,7 +202,6 @@ async def get_subs_by_pid(pid):
         return await c.fetchall()
 
 async def extend_sub(key_id, days):
-    """Изменяет дату истечения подписки на указанное количество дней (может быть отрицательным)."""
     async with aiosqlite.connect('shop.db') as db:
         if days >= 0:
             await db.execute(f"UPDATE vpn_keys SET expires_at = datetime(expires_at, '+{days} days') WHERE id=?", (key_id,))
@@ -326,6 +353,8 @@ def admin_main_kb():
         [InlineKeyboardButton("🔑 Ключи", callback_data='admin_keys')],
         [InlineKeyboardButton("🌍 Страны", callback_data='admin_countries')],
         [InlineKeyboardButton("📅 Редактировать дату", callback_data='admin_editdate')],
+        [InlineKeyboardButton("💰 Изменить цены", callback_data='admin_prices')],
+        [InlineKeyboardButton("📝 Изменить стартовый текст", callback_data='admin_start_text')],
         [InlineKeyboardButton("🔙 Назад", callback_data='back')],
     ])
 
@@ -378,7 +407,14 @@ def order_admin_kb(oid):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     pid = await get_or_create_pid(u.id, u.username, u.first_name)
-    text = f"👋 {BOT_NAME}!\n\n🆔 Ваш ID: {pid}\n\n📡 Роутеры от 7800р\n🌐 VLESS - {PRICES['vless']}р/мес\n🔒 WireGuard - {PRICES['wireguard']}р/мес\n🛡️ AmneziaWG - {PRICES['amneziawg']}р/мес\n\n📞 {ADMIN_USERNAME}"
+    text = START_TEXT_TEMPLATE.format(
+        bot_name=BOT_NAME,
+        pid=pid,
+        vless_price=PRICES['vless'],
+        wg_price=PRICES['wireguard'],
+        awg_price=PRICES['amneziawg'],
+        admin_username=ADMIN_USERNAME
+    )
     await update.message.reply_text(text, reply_markup=main_menu(u.id))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -405,6 +441,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif d == 'admin_editdate':
             context.user_data['edit_step'] = 'input_pid'
             await q.message.edit_text("📅 Введите ID пользователя:"); return
+        elif d == 'admin_prices':
+            context.user_data['admin_setting'] = 'price_vless'
+            await q.message.edit_text("💰 Введите новую цену для VLESS (только число):"); return
+        elif d == 'admin_start_text':
+            context.user_data['admin_setting'] = 'start_text'
+            await q.message.edit_text("📝 Введите новый стартовый текст.\nМожно использовать {bot_name}, {pid}, {vless_price}, {wg_price}, {awg_price}, {admin_username}"); return
         elif d.startswith('adm_cnt_'): p=d.replace('adm_cnt_',''); await q.message.edit_text(f"🌍 {PROTOCOL_NAMES[p]}:", reply_markup=await admin_country_manage_kb(p)); return
         elif d.startswith('adm_delcountry_'): _,_,p,c=d.split('_',3); await remove_country(p,c); await q.answer("✅"); await q.message.edit_text(f"🌍 {PROTOCOL_NAMES[p]}:", reply_markup=await admin_country_manage_kb(p)); return
         elif d.startswith('adm_addcountry_'): p=d.replace('adm_addcountry_',''); context.user_data['add_country']=p; await q.message.edit_text(f"➕ Страна для {PROTOCOL_NAMES[p]}:"); return
@@ -514,6 +556,30 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user; t = update.message.text.strip()
     pid = await get_or_create_pid(u.id, u.username, u.first_name)
 
+    # Админ меняет настройки
+    if u.id == ADMIN_ID and context.user_data.get('admin_setting'):
+        setting = context.user_data.pop('admin_setting')
+        if setting.startswith('price_'):
+            protocol = setting.split('_')[1]
+            try:
+                new_price = int(t)
+                settings = load_settings()
+                settings['prices'][protocol] = new_price
+                save_settings(settings)
+                PRICES[protocol] = new_price
+                await update.message.reply_text(f"✅ Цена {PROTOCOL_NAMES[protocol]} изменена на {new_price}р")
+            except:
+                await update.message.reply_text("❌ Введите число")
+        elif setting == 'start_text':
+            settings = load_settings()
+            settings['start_text'] = t
+            save_settings(settings)
+            global START_TEXT_TEMPLATE
+            START_TEXT_TEMPLATE = t
+            await update.message.reply_text("✅ Стартовый текст обновлён")
+        asyncio.create_task(backup_database())
+        return
+
     if u.id == ADMIN_ID and context.user_data.get('admin_add'):
         info = context.user_data['admin_add']; await add_key(info['protocol'], info['country'], t)
         context.user_data.pop('admin_add'); text, kb = await admin_country_menu(info['protocol'], info['country'])
@@ -583,9 +649,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sub_price = context.user_data.get('router_sub_price', 450)
         total = router_price + sub_price
 
-        # Создаём заказ
         oid = await add_order(u.id, f'router_{model}', total, full_name=name, phone=phone, address=addr)
-        # Создаём подписку на роутер
         await add_router_subscription(u.id, pid, sub_months)
 
         await update.message.reply_text(
