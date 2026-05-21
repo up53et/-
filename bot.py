@@ -15,13 +15,23 @@ BOT_NAME = "NetVault"
 
 logging.basicConfig(level=logging.INFO)
 
-ROUTER_PRICE = 9800
-PRICES = {'vless': 300, 'wireguard': 350, 'amneziawg': 350}
+# Цены на роутеры
+ROUTERS = {
+    'NC-1121': 9800,
+    'NC-1812': 36000,
+    'NC-3811': 18800,
+    'NC-3013': 14800,
+    'NC-2212 4G': 12800
+}
+
+# Цены на VPN
+PRICES = {'vless': 400, 'wireguard': 450, 'amneziawg': 450}
 PROTOCOL_NAMES = {'vless': 'VLESS', 'wireguard': 'WireGuard', 'amneziawg': 'AmneziaWG'}
 DURATION_NAMES = {'1month': '1 мес.', '3months': '3 мес.', '6months': '6 мес.', '1year': '1 год'}
 DURATION_DAYS = {'1month': 30, '3months': 90, '6months': 180, '1year': 365}
 DURATION_DISCOUNTS = {'1month': 0, '3months': 0.10, '6months': 0.20, '1year': 0.30}
 
+# Стартовые страны
 DEFAULT_COUNTRIES = {
     'vless': ['Нидерланды', 'Армения', 'Казахстан', 'Турция', 'Польша'],
     'wireguard': ['Нидерланды'],
@@ -74,10 +84,14 @@ async def get_or_create_pid(uid, un, fn):
         return new_id
 
 async def add_order(uid, prod, amt, **kw):
+    """Сохраняет заказ, явно указывая protocol, country, duration если переданы"""
+    protocol = kw.get('protocol', '')
+    country = kw.get('country', '')
+    duration = kw.get('duration', '')
     async with aiosqlite.connect('shop.db') as db:
         await db.execute(
             'INSERT INTO purchases (user_id, product, amount, protocol, country, duration) VALUES (?, ?, ?, ?, ?, ?)',
-            (uid, prod, amt, kw.get('protocol', ''), kw.get('country', ''), kw.get('duration', ''))
+            (uid, prod, amt, protocol, country, duration)
         )
         await db.commit()
         c = await db.execute('SELECT last_insert_rowid()')
@@ -144,7 +158,7 @@ async def extend_sub(key_id, days):
         c = await db.execute('SELECT expires_at, sold_to FROM vpn_keys WHERE id=?', (key_id,))
         return await c.fetchone()
 
-# HTTP
+# HTTP-заглушка для Render
 async def http_handler(reader, writer):
     try: await asyncio.wait_for(reader.read(4096), timeout=2.0)
     except: pass
@@ -153,26 +167,38 @@ async def http_handler(reader, writer):
 # ========== КЛАВИАТУРЫ ==========
 def main_menu(uid=None):
     kb = [
-        [InlineKeyboardButton("📡 Роутер", callback_data='buy_router'), InlineKeyboardButton("🔑 VPN", callback_data='vpn_menu')],
-        [InlineKeyboardButton("📋 Подписки", callback_data='my_subs'), InlineKeyboardButton("👤 Профиль", callback_data='profile')],
+        [InlineKeyboardButton("📡 Купить роутер", callback_data='router_menu')],
+        [InlineKeyboardButton("🔑 Купить VPN", callback_data='vpn_menu')],
+        [InlineKeyboardButton("📋 Мои подписки", callback_data='my_subs'),
+         InlineKeyboardButton("👤 Профиль", callback_data='profile')],
         [InlineKeyboardButton("ℹ️ Помощь", callback_data='help')],
     ]
-    if uid == ADMIN_ID: kb.append([InlineKeyboardButton("👑 Админ", callback_data='admin')])
+    if uid == ADMIN_ID:
+        kb.append([InlineKeyboardButton("👑 Админ", callback_data='admin')])
+    return InlineKeyboardMarkup(kb)
+
+def router_menu_kb():
+    """Выбор модели роутера"""
+    kb = []
+    for model, price in ROUTERS.items():
+        kb.append([InlineKeyboardButton(f"{model} — {price}₽", callback_data=f'router_{model}')])
+    kb.append([InlineKeyboardButton("🔙 Назад", callback_data='back')])
     return InlineKeyboardMarkup(kb)
 
 def vpn_menu_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"VLESS - {PRICES['vless']}р", callback_data='vpn_vless')],
-        [InlineKeyboardButton(f"WireGuard - {PRICES['wireguard']}р", callback_data='vpn_wireguard')],
-        [InlineKeyboardButton(f"AmneziaWG - {PRICES['amneziawg']}р", callback_data='vpn_amneziawg')],
-        [InlineKeyboardButton("Назад", callback_data='back')],
+        [InlineKeyboardButton(f"VLESS - {PRICES['vless']}р/мес", callback_data='vpn_vless')],
+        [InlineKeyboardButton(f"WireGuard - {PRICES['wireguard']}р/мес", callback_data='vpn_wireguard')],
+        [InlineKeyboardButton(f"AmneziaWG - {PRICES['amneziawg']}р/мес", callback_data='vpn_amneziawg')],
+        [InlineKeyboardButton("🔙 Назад", callback_data='back')],
     ])
 
 async def country_kb(protocol):
     countries = await get_countries(protocol)
-    if not countries: return InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data='vpn_menu')]])
+    if not countries:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data='vpn_menu')]])
     kb = [[InlineKeyboardButton(c, callback_data=f'country_{protocol}_{c}')] for c in countries]
-    kb.append([InlineKeyboardButton("Назад", callback_data='vpn_menu')])
+    kb.append([InlineKeyboardButton("🔙 Назад", callback_data='vpn_menu')])
     return InlineKeyboardMarkup(kb)
 
 def duration_kb(protocol, country):
@@ -184,14 +210,14 @@ def duration_kb(protocol, country):
         label = f"{DURATION_NAMES[dur]} - {price}р"
         if disc > 0: label += f" (-{int(disc*100)}%)"
         kb.append([InlineKeyboardButton(label, callback_data=f'dur_{protocol}_{country}_{dur}_{price}')])
-    kb.append([InlineKeyboardButton("Назад", callback_data=f'vpn_{protocol}')])
+    kb.append([InlineKeyboardButton("🔙 Назад", callback_data=f'vpn_{protocol}')])
     return InlineKeyboardMarkup(kb)
 
 def admin_main_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Статистика", callback_data='admin_stats')],
-        [InlineKeyboardButton("🔑 Ключи", callback_data='admin_keys')],
-        [InlineKeyboardButton("🌍 Страны", callback_data='admin_countries')],
+        [InlineKeyboardButton("🔑 Управление ключами", callback_data='admin_keys')],
+        [InlineKeyboardButton("🌍 Управление странами", callback_data='admin_countries')],
         [InlineKeyboardButton("📅 Редактировать дату", callback_data='admin_editdate')],
         [InlineKeyboardButton("🔙 Назад", callback_data='back')],
     ])
@@ -201,21 +227,21 @@ def admin_proto_kb():
         [InlineKeyboardButton("VLESS", callback_data='adm_proto_vless')],
         [InlineKeyboardButton("WireGuard", callback_data='adm_proto_wireguard')],
         [InlineKeyboardButton("AmneziaWG", callback_data='adm_proto_amneziawg')],
-        [InlineKeyboardButton("Назад", callback_data='admin')],
+        [InlineKeyboardButton("🔙 Назад", callback_data='admin')],
     ])
 
 async def admin_country_kb(protocol):
     countries = await get_countries(protocol)
     kb = [[InlineKeyboardButton(c, callback_data=f'adm_country_{protocol}_{c}')] for c in countries]
-    kb.append([InlineKeyboardButton("➕ Страну", callback_data=f'adm_addcountry_{protocol}')])
-    kb.append([InlineKeyboardButton("Назад", callback_data='admin_keys')])
+    kb.append([InlineKeyboardButton("➕ Добавить страну", callback_data=f'adm_addcountry_{protocol}')])
+    kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin_keys')])
     return InlineKeyboardMarkup(kb)
 
 async def admin_country_manage_kb(protocol):
     countries = await get_countries(protocol)
-    kb = [[InlineKeyboardButton(f"🗑️ {c}", callback_data=f'adm_delcountry_{protocol}_{c}')] for c in countries]
-    kb.append([InlineKeyboardButton("➕ Страну", callback_data=f'adm_addcountry_{protocol}')])
-    kb.append([InlineKeyboardButton("Назад", callback_data='admin_countries')])
+    kb = [[InlineKeyboardButton(f"🗑️ Удалить {c}", callback_data=f'adm_delcountry_{protocol}_{c}')] for c in countries]
+    kb.append([InlineKeyboardButton("➕ Добавить страну", callback_data=f'adm_addcountry_{protocol}')])
+    kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin_countries')])
     return InlineKeyboardMarkup(kb)
 
 async def admin_country_menu(protocol, country):
@@ -226,12 +252,12 @@ async def admin_country_menu(protocol, country):
         total = (await c.fetchone())[0]
         c = await db.execute('SELECT COUNT(*) FROM vpn_keys WHERE protocol=? AND country=? AND is_sold=TRUE', (protocol, country))
         sold = (await c.fetchone())[0]
-    text = f"🔐 {PROTOCOL_NAMES[protocol]} — {country}\n\n📦 Всего: {total} | ✅ {avail} | ❌ {sold}"
+    text = f"🔐 {PROTOCOL_NAMES[protocol]} — {country}\n\n📦 Всего: {total} | ✅ Свободно: {avail} | ❌ Продано: {sold}"
     kb = [
-        [InlineKeyboardButton("➕ Ключ", callback_data=f'adm_add1_{protocol}_{country}')],
-        [InlineKeyboardButton("📋 Список", callback_data=f'adm_list_{protocol}_{country}')],
-        [InlineKeyboardButton("🗑️ Регион", callback_data=f'adm_remove_region_{protocol}_{country}')],
-        [InlineKeyboardButton("Назад", callback_data=f'adm_proto_{protocol}')],
+        [InlineKeyboardButton("➕ Добавить ключ", callback_data=f'adm_add1_{protocol}_{country}')],
+        [InlineKeyboardButton("📋 Список ключей", callback_data=f'adm_list_{protocol}_{country}')],
+        [InlineKeyboardButton("🗑️ Удалить регион", callback_data=f'adm_remove_region_{protocol}_{country}')],
+        [InlineKeyboardButton("🔙 К странам", callback_data=f'adm_proto_{protocol}')],
     ]
     return text, InlineKeyboardMarkup(kb)
 
@@ -245,7 +271,7 @@ def order_admin_kb(oid):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     pid = await get_or_create_pid(u.id, u.username, u.first_name)
-    text = f"👋 {BOT_NAME}!\n\n🆔 Ваш ID: {pid}\n\n📡 Роутер - {ROUTER_PRICE}р\n🌐 VLESS - {PRICES['vless']}р\n🔒 WireGuard - {PRICES['wireguard']}р\n🛡️ AmneziaWG - {PRICES['amneziawg']}р\n\n📞 {ADMIN_USERNAME}"
+    text = f"👋 {BOT_NAME}!\n\n🆔 Ваш ID: {pid}\n\n📡 Роутеры от 9800р\n🌐 VLESS - {PRICES['vless']}р/мес\n🔒 WireGuard - {PRICES['wireguard']}р/мес\n🛡️ AmneziaWG - {PRICES['amneziawg']}р/мес\n\n📞 {ADMIN_USERNAME}"
     await update.message.reply_text(text, reply_markup=main_menu(u.id))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -255,7 +281,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # АДМИН
     if u.id == ADMIN_ID:
-        if d == 'admin': await q.message.edit_text("👑 Админ", reply_markup=admin_main_kb()); return
+        if d == 'admin': await q.message.edit_text("👑 Админ-панель", reply_markup=admin_main_kb()); return
         elif d == 'admin_stats':
             async with aiosqlite.connect('shop.db') as db:
                 c = await db.execute('SELECT COUNT(*) FROM users'); us = (await c.fetchone())[0]
@@ -268,7 +294,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("VLESS", callback_data='adm_cnt_vless')],
                 [InlineKeyboardButton("WireGuard", callback_data='adm_cnt_wireguard')],
                 [InlineKeyboardButton("AmneziaWG", callback_data='adm_cnt_amneziawg')],
-                [InlineKeyboardButton("Назад", callback_data='admin')]])); return
+                [InlineKeyboardButton("🔙 Назад", callback_data='admin')]])); return
         elif d == 'admin_editdate':
             context.user_data['edit_step'] = 'input_pid'
             await q.message.edit_text("📅 Введите ID пользователя:"); return
@@ -284,7 +310,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async with aiosqlite.connect('shop.db') as db:
                 cur=await db.execute('SELECT id,key_data,is_sold FROM vpn_keys WHERE protocol=? AND country=? ORDER BY id DESC LIMIT 10',(p,c)); keys=await cur.fetchall()
             text=f"📋 {PROTOCOL_NAMES[p]} — {c}\n\n"+("\n".join([f"ID {k[0]}: {'✅' if not k[2] else '❌'} | {k[1][:30]}..." for k in keys]) if keys else "Нет ключей")
-            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data=f'adm_country_{p}_{c}')]])); return
+            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f'adm_country_{p}_{c}')]])); return
         elif d.startswith('approve_'): oid=int(d.replace('approve_','')); await approve_order(q,context,oid); return
         elif d.startswith('reject_'): oid=int(d.replace('reject_','')); await reject_order(q,context,oid); return
         elif d.startswith('edit_key_'):
@@ -292,11 +318,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['edit_key_id']=key_id
             await q.message.edit_text(f"🔑 Ключ ID: {key_id}\n\nВведите +дни или -дни (например +7):"); return
     
-    # ОБЫЧНЫЕ
-    if d == 'back': await q.message.edit_text("🏠 Меню:", reply_markup=main_menu(u.id))
-    elif d == 'buy_router':
-        context.user_data['wait_router'] = 'name'; context.user_data['router_data'] = {}
-        await q.message.edit_text("📡 Роутер NC-1121\n\n📝 Шаг 1/3: Введите Имя и Фамилию:")
+    # ОБЫЧНЫЕ КНОПКИ
+    if d == 'back': await q.message.edit_text("🏠 Главное меню:", reply_markup=main_menu(u.id))
+    elif d == 'router_menu':
+        await q.message.edit_text("📡 Выберите модель роутера:", reply_markup=router_menu_kb())
+    elif d.startswith('router_'):
+        model = d.replace('router_', '')
+        price = ROUTERS.get(model, 9800)
+        context.user_data['router_model'] = model
+        context.user_data['router_price'] = price
+        context.user_data['wait_router'] = 'name'
+        context.user_data['router_data'] = {}
+        await q.message.edit_text(f"📡 {model} — {price}р\n\n📝 Шаг 1/3: Введите Имя и Фамилию:")
     elif d == 'vpn_menu': await q.message.edit_text("🔐 Протокол:", reply_markup=vpn_menu_kb())
     elif d.startswith('vpn_'): p=d.replace('vpn_',''); await q.message.edit_text(f"🌍 {PROTOCOL_NAMES[p]}:", reply_markup=await country_kb(p))
     elif d.startswith('country_'): _,p,c=d.split('_',2); context.user_data['vp']=p; context.user_data['vc']=c; await q.message.edit_text(f"⏱️ ({c}):", reply_markup=duration_kb(p,c))
@@ -315,23 +348,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with aiosqlite.connect('shop.db') as db:
             c=await db.execute('SELECT COUNT(*),SUM(amount) FROM purchases WHERE user_id=? AND status="paid"',(u.id,)); o,s=await c.fetchone()
         await q.message.edit_text(f"👤 {u.first_name}\n🆔 {pid}\n🏷️ @{u.username or 'нет'}\n🛒 Заказов: {o or 0}\n💰 Потрачено: {s or 0}р", reply_markup=main_menu(u.id))
-    elif d == 'help': await q.message.edit_text(f"ℹ️ {BOT_NAME}\n📡 {ROUTER_PRICE}р\n🌐 {PRICES['vless']}р\n🔒 {PRICES['wireguard']}р\n🛡️ {PRICES['amneziawg']}р\n📞 {ADMIN_USERNAME}\n🆔 Ваш ID: {pid}", reply_markup=main_menu(u.id))
+    elif d == 'help':
+        await q.message.edit_text(f"ℹ️ {BOT_NAME}\n📡 Роутеры от 9800р\n🌐 VLESS - {PRICES['vless']}р\n🔒 WireGuard - {PRICES['wireguard']}р\n🛡️ AmneziaWG - {PRICES['amneziawg']}р\n📞 {ADMIN_USERNAME}\n🆔 Ваш ID: {pid}", reply_markup=main_menu(u.id))
 
-# ========== ВЫДАЧА / ОТКЛОНЕНИЕ ==========
+# ========== ВЫДАЧА ЗАКАЗА ==========
 async def approve_order(q, context, oid):
     o = await get_purchase(oid)
-    if not o: await q.answer("Не найден", show_alert=True); return
+    if not o: await q.answer("Заказ не найден", show_alert=True); return
     uid, prod = o[1], o[2]
     pid = await get_or_create_pid(uid, None, None)
     
     if 'router' in prod:
         await update_purchase_status(oid, 'paid')
-        await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен! {ADMIN_USERNAME} свяжется.")
-        await q.message.edit_text(q.message.text + "\n\n✅ ОДОБРЕНО", reply_markup=None); return
+        await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен! {ADMIN_USERNAME} свяжется для доставки.")
+        await q.message.edit_text(q.message.text + "\n\n✅ ОДОБРЕНО", reply_markup=None)
+        return
     
-    protocol = o[6] if o[6] else prod.replace('vpn_','')
-    country = o[7] if o[7] else 'Нидерланды'
-    duration = o[8] if o[8] else '1month'
+    # Теперь правильные индексы: o[8]=protocol, o[9]=country, o[10]=duration
+    protocol = o[8] if len(o) > 8 and o[8] else None
+    country = o[9] if len(o) > 9 and o[9] else None
+    duration = o[10] if len(o) > 10 and o[10] else '1month'
+    
+    if not protocol or not country:
+        await q.answer("❌ В заказе не указаны протокол или страна", show_alert=True); return
+    
     days = DURATION_DAYS.get(duration, 30)
     exp = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
     key = await get_key(protocol, country)
@@ -344,9 +384,9 @@ async def approve_order(q, context, oid):
 
 async def reject_order(q, context, oid):
     o = await get_purchase(oid)
-    if not o: await q.answer("Не найден", show_alert=True); return
+    if not o: await q.answer("Заказ не найден", show_alert=True); return
     await update_purchase_status(oid, 'rejected')
-    await context.bot.send_message(o[1], f"❌ Заказ №{oid} отклонён. {ADMIN_USERNAME}")
+    await context.bot.send_message(o[1], f"❌ Заказ №{oid} отклонён. Свяжитесь с {ADMIN_USERNAME}")
     await q.message.edit_text(q.message.text + "\n\n❌ ОТКЛОНЕНО", reply_markup=None)
 
 # ========== ТЕКСТОВЫЕ КОМАНДЫ ==========
@@ -374,7 +414,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             subs = await get_subs_by_pid(target_pid)
             if not subs: await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\nНет подписок", reply_markup=admin_main_kb()); context.user_data.pop('edit_step',None); return
             kb = [[InlineKeyboardButton(f"🔐 {PROTOCOL_NAMES.get(s[1],s[1])} ({s[2]}) до {format_date(s[3])}", callback_data=f'edit_key_{s[0]}')] for s in subs]
-            kb.append([InlineKeyboardButton("Назад", callback_data='admin')])
+            kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin')])
             await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\n\nВыберите подписку:", reply_markup=InlineKeyboardMarkup(kb))
             context.user_data['edit_step'] = 'input_days'
         except: await update.message.reply_text("❌ Числовой ID"); return
@@ -402,10 +442,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['router_data']['phone'] = t; context.user_data['wait_router'] = 'address'
         await update.message.reply_text("📝 Шаг 3/3: Введите адрес доставки:"); return
     elif context.user_data.get('wait_router') == 'address':
-        rd = context.user_data['router_data']; name, phone, addr = rd['name'], rd['phone'], t
-        oid = await add_order(u.id, 'router', ROUTER_PRICE, full_name=name, phone=phone, address=addr)
-        await update.message.reply_text(f"✅ Заказ №{oid}\n\n📡 Роутер\n👤 {name}\n📞 {phone}\n📍 {addr}\n💰 {ROUTER_PRICE}р\n\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}", reply_markup=main_menu(u.id))
-        await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n📡 Роутер\n👤 {name}\n💰 {ROUTER_PRICE}р\nID: {pid}", reply_markup=order_admin_kb(oid))
+        rd = context.user_data['router_data']
+        name, phone, addr = rd['name'], rd['phone'], t
+        model = context.user_data.get('router_model', 'NC-1121')
+        price = context.user_data.get('router_price', 9800)
+        oid = await add_order(u.id, f'router_{model}', price)
+        await update.message.reply_text(
+            f"✅ Заказ №{oid}\n\n📡 {model}\n👤 {name}\n📞 {phone}\n📍 {addr}\n💰 {price}р\n\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}",
+            reply_markup=main_menu(u.id)
+        )
+        await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n📡 {model}\n👤 {name}\n💰 {price}р\nID: {pid}", reply_markup=order_admin_kb(oid))
         context.user_data['wait_router'] = None; context.user_data.pop('router_data', None); return
 
 # ========== КОМАНДЫ ==========
@@ -427,9 +473,12 @@ async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'router' in prod:
         await update_purchase_status(oid, 'paid'); await context.bot.send_message(uid, f"✅ Заказ №{oid} оплачен!")
         await update.message.reply_text("✅ Оплачен"); return
-    protocol = o[6] if o[6] else prod.replace('vpn_','')
-    country = o[7] if o[7] else 'Нидерланды'
-    duration = o[8] if o[8] else '1month'
+    # Индексы: o[8]=protocol, o[9]=country, o[10]=duration
+    protocol = o[8] if len(o) > 8 and o[8] else None
+    country = o[9] if len(o) > 9 and o[9] else None
+    duration = o[10] if len(o) > 10 and o[10] else '1month'
+    if not protocol or not country:
+        await update.message.reply_text("❌ В заказе не указаны протокол или страна"); return
     days = DURATION_DAYS.get(duration, 30)
     exp = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
     key = await get_key(protocol, country)
