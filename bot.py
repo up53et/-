@@ -34,45 +34,46 @@ DEFAULT_START_TEXT = (
     "📞 {admin_username}"
 )
 DEFAULT_PRICES = {'vless': 400, 'wireguard': 450, 'amneziawg': 450}
-
-def load_settings():
-    try:
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except:
-        return {'start_text': DEFAULT_START_TEXT, 'prices': DEFAULT_PRICES.copy()}
-
-def save_settings(settings):
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
-
-# Загружаем настройки при старте
-settings = load_settings()
-PRICES = settings.get('prices', DEFAULT_PRICES.copy())
-START_TEXT_TEMPLATE = settings.get('start_text', DEFAULT_START_TEXT)
-
-logging.basicConfig(level=logging.INFO)
-
-# ---------- Роутеры ----------
-ROUTERS = {
+DEFAULT_ROUTER_PRICES = {
     'Netcraze NC-1121': 7800,
     'Netcraze NC-1812': 34000,
     'Netcraze NC-3811': 16800,
     'Netcraze NC-3013': 12800,
     'Netcraze NC-2212 4G (SIM)': 10800
 }
+DEFAULT_ROUTER_SUB_PRICES = {1: 450, 3: 1200, 6: 2100, 12: 3250}
 
-# ---------- VPN ----------
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {
+            'start_text': DEFAULT_START_TEXT,
+            'prices': DEFAULT_PRICES.copy(),
+            'router_prices': DEFAULT_ROUTER_PRICES.copy(),
+            'router_sub_prices': DEFAULT_ROUTER_SUB_PRICES.copy()
+        }
+
+def save_settings(settings):
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+settings = load_settings()
+PRICES = settings.get('prices', DEFAULT_PRICES.copy())
+ROUTERS = settings.get('router_prices', DEFAULT_ROUTER_PRICES.copy())
+ROUTER_SUB_PRICES = settings.get('router_sub_prices', DEFAULT_ROUTER_SUB_PRICES.copy())
+START_TEXT_TEMPLATE = settings.get('start_text', DEFAULT_START_TEXT)
+
+logging.basicConfig(level=logging.INFO)
+
 PROTOCOL_NAMES = {'vless': 'VLESS', 'wireguard': 'WireGuard', 'amneziawg': 'AmneziaWG'}
 DURATION_NAMES = {'1month': '1 мес.', '3months': '3 мес.', '6months': '6 мес.', '1year': '1 год'}
 DURATION_DAYS = {'1month': 30, '3months': 90, '6months': 180, '1year': 365}
+# Скидки применяются автоматически: 3 мес -10%, 6 мес -20%, 12 мес -30%
 DURATION_DISCOUNTS = {'1month': 0, '3months': 0.10, '6months': 0.20, '1year': 0.30}
-
-# ---------- Подписка для роутеров ----------
 ROUTER_SUB_MONTHS = {1: '1 месяц', 3: '3 месяца', 6: '6 месяцев', 12: '1 год'}
-ROUTER_SUB_PRICES = {1: 450, 3: 1200, 6: 2100, 12: 3250}
 
-# ---------- Стартовые страны ----------
 DEFAULT_COUNTRIES = {
     'vless': ['Нидерланды', 'Армения', 'Казахстан', 'Турция', 'Польша'],
     'wireguard': ['Нидерланды'],
@@ -358,6 +359,14 @@ def admin_main_kb():
         [InlineKeyboardButton("🔙 Назад", callback_data='back')],
     ])
 
+def admin_price_main_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📡 Цена роутера", callback_data='price_router')],
+        [InlineKeyboardButton("🔑 VPN ключи", callback_data='price_vpn')],
+        [InlineKeyboardButton("⏱️ Подписка на роутер", callback_data='price_router_sub')],
+        [InlineKeyboardButton("🔙 Назад", callback_data='admin')]
+    ])
+
 def admin_proto_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("VLESS", callback_data='adm_proto_vless')],
@@ -442,8 +451,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['edit_step'] = 'input_pid'
             await q.message.edit_text("📅 Введите ID пользователя:"); return
         elif d == 'admin_prices':
-            context.user_data['admin_setting'] = 'price_vless'
-            await q.message.edit_text("💰 Введите новую цену для VLESS (только число):"); return
+            await q.message.edit_text("💰 Что меняем?", reply_markup=admin_price_main_kb()); return
+        # --- Установка цены роутера ---
+        elif d == 'price_router':
+            kb = [[InlineKeyboardButton(model, callback_data=f'price_router_model_{model}')] for model in ROUTERS]
+            kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin_prices')])
+            await q.message.edit_text("📡 Выберите модель:", reply_markup=InlineKeyboardMarkup(kb)); return
+        elif d.startswith('price_router_model_'):
+            model = d.replace('price_router_model_', '')
+            context.user_data['price_target'] = ('router', model)
+            context.user_data['price_step'] = 1
+            await q.message.edit_text(f"📡 {model}\n\nВведите новую цену (число):"); return
+        # --- Установка базовой цены VPN за 1 месяц ---
+        elif d == 'price_vpn':
+            kb = [
+                [InlineKeyboardButton("VLESS", callback_data='price_vpn_vless')],
+                [InlineKeyboardButton("WireGuard", callback_data='price_vpn_wireguard')],
+                [InlineKeyboardButton("AmneziaWG", callback_data='price_vpn_amneziawg')],
+                [InlineKeyboardButton("🔙 Назад", callback_data='admin_prices')]
+            ]
+            await q.message.edit_text("🔑 Протокол:", reply_markup=InlineKeyboardMarkup(kb)); return
+        elif d.startswith('price_vpn_'):
+            protocol = d.replace('price_vpn_', '')
+            context.user_data['price_target'] = ('vpn', protocol)
+            context.user_data['price_step'] = 1
+            await q.message.edit_text(f"🔑 {PROTOCOL_NAMES[protocol]}\n\nВведите цену за 1 месяц:"); return
+        # --- Установка базовой цены подписки на роутер ---
+        elif d == 'price_router_sub':
+            context.user_data['price_target'] = ('router_sub', None)
+            context.user_data['price_step'] = 1
+            await q.message.edit_text("⏱️ Подписка на роутер\n\nВведите цену за 1 месяц:"); return
         elif d == 'admin_start_text':
             context.user_data['admin_setting'] = 'start_text'
             await q.message.edit_text("📝 Введите новый стартовый текст.\nМожно использовать {bot_name}, {pid}, {vless_price}, {wg_price}, {awg_price}, {admin_username}"); return
@@ -556,21 +593,63 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user; t = update.message.text.strip()
     pid = await get_or_create_pid(u.id, u.username, u.first_name)
 
-    # Админ меняет настройки
+    # Админ меняет настройки цен
+    if u.id == ADMIN_ID and context.user_data.get('price_target'):
+        target, item = context.user_data['price_target']
+        try:
+            new_price = int(t)
+            settings = load_settings()
+            if target == 'router':
+                settings['router_prices'][item] = new_price
+                ROUTERS[item] = new_price
+                await update.message.reply_text(f"✅ Цена {item} изменена на {new_price}р")
+            elif target == 'vpn':
+                # new_price - базовая цена за 1 месяц, рассчитываем остальные
+                prices = {}
+                for dur, disc in DURATION_DISCOUNTS.items():
+                    months = DURATION_DAYS[dur] // 30
+                    prices[dur] = int(new_price * months * (1 - disc))
+                settings['prices'][item] = prices['1month']  # базовая
+                PRICES[item] = prices['1month']
+                # Сохраняем также рассчитанные цены в специальном ключе, чтобы отображать
+                # Но для расчёта в длительности используем базовую цену из PRICES
+                await update.message.reply_text(
+                    f"✅ Цены {PROTOCOL_NAMES[item]} обновлены:\n"
+                    f"1 мес: {prices['1month']}р\n"
+                    f"3 мес: {prices['3months']}р (-10%)\n"
+                    f"6 мес: {prices['6months']}р (-20%)\n"
+                    f"12 мес: {prices['1year']}р (-30%)"
+                )
+            elif target == 'router_sub':
+                prices = {}
+                for months, label in ROUTER_SUB_MONTHS.items():
+                    # скидки те же: 3м -10%, 6м -20%, 12м -30%
+                    if months == 1: disc = 0
+                    elif months == 3: disc = 0.10
+                    elif months == 6: disc = 0.20
+                    elif months == 12: disc = 0.30
+                    price = int(new_price * months * (1 - disc))
+                    prices[months] = price
+                settings['router_sub_prices'] = prices
+                ROUTER_SUB_PRICES.update(prices)
+                await update.message.reply_text(
+                    f"✅ Подписка на роутер обновлена:\n"
+                    f"1 мес: {prices[1]}р\n"
+                    f"3 мес: {prices[3]}р (-10%)\n"
+                    f"6 мес: {prices[6]}р (-20%)\n"
+                    f"12 мес: {prices[12]}р (-30%)"
+                )
+            save_settings(settings)
+            asyncio.create_task(backup_database())
+        except:
+            await update.message.reply_text("❌ Введите число")
+        context.user_data.pop('price_target', None)
+        context.user_data.pop('price_step', None)
+        return
+
     if u.id == ADMIN_ID and context.user_data.get('admin_setting'):
         setting = context.user_data.pop('admin_setting')
-        if setting.startswith('price_'):
-            protocol = setting.split('_')[1]
-            try:
-                new_price = int(t)
-                settings = load_settings()
-                settings['prices'][protocol] = new_price
-                save_settings(settings)
-                PRICES[protocol] = new_price
-                await update.message.reply_text(f"✅ Цена {PROTOCOL_NAMES[protocol]} изменена на {new_price}р")
-            except:
-                await update.message.reply_text("❌ Введите число")
-        elif setting == 'start_text':
+        if setting == 'start_text':
             settings = load_settings()
             settings['start_text'] = t
             save_settings(settings)
