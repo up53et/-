@@ -20,8 +20,8 @@ BOT_NAME = "NetVault"
 # Gist Backup
 GIST_TOKEN = os.environ.get("GIST_TOKEN")
 GIST_ID = "63fb67d2ba3f326f99a9048d42f3b5f6"
-GIST_DB_FILENAME = "shop_backup.txt"          # файл для базы данных
-GIST_SETTINGS_FILENAME = "settings_backup.txt" # файл для настроек
+GIST_DB_FILENAME = "shop_backup.txt"
+GIST_SETTINGS_FILENAME = "settings_backup.txt"
 
 SETTINGS_FILE = "settings.json"
 
@@ -45,17 +45,17 @@ DEFAULT_ROUTER_PRICES = {
 }
 DEFAULT_ROUTER_SUB_PRICES = {1: 450, 3: 1200, 6: 2100, 12: 3250}
 
+logging.basicConfig(level=logging.INFO)
+
 # ---------- Загрузка / сохранение настроек ----------
 async def load_settings():
-    """Загружает настройки из локального файла или из Gist, если локальный отсутствует."""
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
             pass
-    
-    # Пытаемся скачать из Gist
+    # Пробуем из Gist
     try:
         async with aiohttp.ClientSession() as session:
             url = f"https://api.github.com/gists/{GIST_ID}"
@@ -66,14 +66,11 @@ async def load_settings():
                     content = gist["files"][GIST_SETTINGS_FILENAME]["content"]
                     if content:
                         settings = json.loads(content)
-                        # Сохраняем локально
                         with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
                             json.dump(settings, f, ensure_ascii=False, indent=2)
                         return settings
-    except:
-        pass
-    
-    # Всё остальное – по умолчанию
+    except Exception as e:
+        logging.error(f"Ошибка загрузки настроек из Gist: {e}")
     return {
         'start_text': DEFAULT_START_TEXT,
         'prices': DEFAULT_PRICES.copy(),
@@ -82,12 +79,8 @@ async def load_settings():
     }
 
 async def save_settings(settings):
-    """Сохраняет настройки локально и отправляет в Gist."""
-    # Локально
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
-    
-    # В Gist
     try:
         encoded = json.dumps(settings, ensure_ascii=False)
         async with aiohttp.ClientSession() as session:
@@ -99,18 +92,15 @@ async def save_settings(settings):
             data = {"files": {GIST_SETTINGS_FILENAME: {"content": encoded}}}
             async with session.patch(url, json=data, headers=headers) as resp:
                 if resp.status != 200:
-                    logging.error(f"❌ Ошибка сохранения настроек в Gist: {resp.status}")
+                    logging.error(f"❌ Ошибка сохранения настроек: {resp.status}")
     except Exception as e:
         logging.error(f"Ошибка сохранения настроек: {e}")
 
-# Загружаем настройки (асинхронная операция, нужно запускать внутри цикла событий)
-# Для удобства сделаем глобальные переменные доступными после вызова load_settings
+# Глобальные переменные (заполняются в main)
 PRICES = DEFAULT_PRICES.copy()
 ROUTERS = DEFAULT_ROUTER_PRICES.copy()
 ROUTER_SUB_PRICES = DEFAULT_ROUTER_SUB_PRICES.copy()
 START_TEXT_TEMPLATE = DEFAULT_START_TEXT
-
-logging.basicConfig(level=logging.INFO)
 
 PROTOCOL_NAMES = {'vless': 'VLESS', 'wireguard': 'WireGuard', 'amneziawg': 'AmneziaWG'}
 DURATION_NAMES = {'1month': '1 мес.', '3months': '3 мес.', '6months': '6 мес.', '1year': '1 год'}
@@ -255,37 +245,6 @@ async def extend_sub(key_id, days):
         await db.commit()
         c = await db.execute('SELECT expires_at, sold_to FROM vpn_keys WHERE id=?', (key_id,))
         return await c.fetchone()
-
-# ========== ФОНОВАЯ ПРОВЕРКА ИСТЁКШИХ ПОДПИСОК ==========
-async def check_expired_subscriptions(app, admin_id):
-    while True:
-        await asyncio.sleep(3600)
-        try:
-            async with aiosqlite.connect('shop.db') as db:
-                c = await db.execute(
-                    """SELECT v.sold_to, v.protocol, v.country, COALESCE(v.personal_id, u.personal_id) as pid
-                       FROM vpn_keys v
-                       LEFT JOIN users u ON v.sold_to = u.user_id
-                       WHERE v.is_sold=TRUE AND v.expires_at <= datetime('now')"""
-                )
-                expired = await c.fetchall()
-                for user_id, protocol, country, pid in expired:
-                    uc = await db.execute('SELECT username FROM users WHERE user_id=?', (user_id,))
-                    user_row = await uc.fetchone()
-                    username = user_row[0] if user_row and user_row[0] else f"id{user_id}"
-                    display_name = "📡 Подписка на роутер" if protocol == 'router' else f"🔐 {protocol} ({country})"
-                    try:
-                        await app.bot.send_message(
-                            admin_id,
-                            f"❗ ПОДПИСКА ОКОНЧЕНА\n"
-                            f"👤 @{username}\n"
-                            f"🆔 {pid}\n"
-                            f"{display_name}"
-                        )
-                    except Exception as e:
-                        logging.error(f"Не удалось отправить уведомление: {e}")
-        except Exception as e:
-            logging.error(f"Ошибка в проверке подписок: {e}")
 
 # ========== GIST BACKUP ==========
 async def backup_database():
@@ -640,13 +599,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ROUTERS[item] = new_price
                     await update.message.reply_text(f"✅ Цена {item} изменена на {new_price}р")
                 elif target == 'vpn':
-                    # Рассчитываем цены для всех сроков
-                    for dur, disc in DURATION_DISCOUNTS.items():
-                        months = DURATION_DAYS[dur] // 30
-                        # цены не сохраняем отдельно, меняем только базовую
                     settings['prices'][item] = new_price
                     PRICES[item] = new_price
-                    # Покажем рассчитанные цены
                     p = {}
                     for dur, disc in DURATION_DISCOUNTS.items():
                         months = DURATION_DAYS[dur] // 30
@@ -777,7 +731,22 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('router_data', None)
         return
 
-# ========== КОМАНДЫ ==========
+# ========== КОМАНДА ПРОВЕРКИ GIST ==========
+async def checkgist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            headers = {"Authorization": f"token {GIST_TOKEN}"}
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    await update.message.reply_text("✅ Gist работает")
+                else:
+                    await update.message.reply_text(f"❌ Ошибка Gist: {resp.status}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ========== ОСТАЛЬНЫЕ КОМАНДЫ ==========
 async def addkey_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     a = context.args
@@ -839,7 +808,6 @@ async def mysubs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global PRICES, ROUTERS, ROUTER_SUB_PRICES, START_TEXT_TEMPLATE
     
-    # Загружаем настройки (цены, текст) из файла или Gist
     settings = await load_settings()
     PRICES = settings.get('prices', DEFAULT_PRICES.copy())
     ROUTERS = settings.get('router_prices', DEFAULT_ROUTER_PRICES.copy())
@@ -857,6 +825,7 @@ async def main():
     app.add_handler(CommandHandler("done", done_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("mysubs", mysubs_cmd))
+    app.add_handler(CommandHandler("checkgist", checkgist_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
