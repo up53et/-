@@ -1,22 +1,29 @@
 import asyncio
 import aiosqlite
 import os
+import base64
+import aiohttp
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import logging
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8809011538:AAFMpc0vBtMMHS0ZbXpjDbPmFkWfxW_jHtM"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 5737961034
 ADMIN_USERNAME = "@yng_beko"
 CARD_INFO = "2200-7020-5664-8004 (Игорь Д.)"
 PORT = int(os.environ.get("PORT", 8080))
 BOT_NAME = "NetVault"
 
+# Gist Backup
+GIST_TOKEN = os.environ.get("GIST_TOKEN")
+GIST_ID = "63fb67d2ba3f326f99a9048d42f3b5f6"
+GIST_FILENAME = "shop_backup.txt"
+
 logging.basicConfig(level=logging.INFO)
 
-# ---------- Роутеры (цены снижены на 2000) ----------
+# ---------- Роутеры ----------
 ROUTERS = {
     'Netcraze NC-1121': 7800,
     'Netcraze NC-1812': 34000,
@@ -157,10 +164,89 @@ async def get_subs_by_pid(pid):
         return await c.fetchall()
 
 async def extend_sub(key_id, days):
+    """Изменяет дату истечения подписки на указанное количество дней (может быть отрицательным)."""
     async with aiosqlite.connect('shop.db') as db:
-        await db.execute(f"UPDATE vpn_keys SET expires_at = datetime(expires_at, '{days} days') WHERE id=?", (key_id,))
+        if days >= 0:
+            await db.execute(f"UPDATE vpn_keys SET expires_at = datetime(expires_at, '+{days} days') WHERE id=?", (key_id,))
+        else:
+            await db.execute(f"UPDATE vpn_keys SET expires_at = datetime(expires_at, '{days} days') WHERE id=?", (key_id,))
+        await db.commit()
         c = await db.execute('SELECT expires_at, sold_to FROM vpn_keys WHERE id=?', (key_id,))
         return await c.fetchone()
+
+# ========== ФОНОВАЯ ПРОВЕРКА ИСТЁКШИХ ПОДПИСОК ==========
+async def check_expired_subscriptions(app, admin_id):
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            async with aiosqlite.connect('shop.db') as db:
+                c = await db.execute(
+                    "SELECT sold_to, protocol, country, personal_id FROM vpn_keys "
+                    "WHERE is_sold=TRUE AND expires_at <= datetime('now')"
+                )
+                expired = await c.fetchall()
+                for user_id, protocol, country, pid in expired:
+                    uc = await db.execute('SELECT username FROM users WHERE user_id=?', (user_id,))
+                    user_row = await uc.fetchone()
+                    username = user_row[0] if user_row and user_row[0] else f"id{user_id}"
+                    try:
+                        await app.bot.send_message(
+                            admin_id,
+                            f"❗ ПОДПИСКА ОКОНЧЕНА\n"
+                            f"👤 @{username}\n"
+                            f"🆔 {pid}\n"
+                            f"🔐 {protocol} ({country})"
+                        )
+                    except Exception as e:
+                        logging.error(f"Не удалось отправить уведомление: {e}")
+        except Exception as e:
+            logging.error(f"Ошибка в проверке подписок: {e}")
+
+# ========== GIST BACKUP ==========
+async def backup_database():
+    try:
+        with open("shop.db", "rb") as f:
+            encoded = base64.b64encode(f.read()).decode()
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            headers = {
+                "Authorization": f"token {GIST_TOKEN}",
+                "Accept": "application/vnd.github+json"
+            }
+            data = {"files": {GIST_FILENAME: {"content": encoded}}}
+            async with session.patch(url, json=data, headers=headers) as resp:
+                if resp.status == 200:
+                    logging.info("✅ База сохранена в Gist")
+                else:
+                    logging.error(f"❌ Ошибка сохранения: {resp.status}")
+    except Exception as e:
+        logging.error(f"Ошибка бекапа: {e}")
+
+async def restore_database():
+    if os.path.exists("shop.db"):
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            headers = {"Authorization": f"token {GIST_TOKEN}"}
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    gist = await resp.json()
+                    content = gist["files"][GIST_FILENAME]["content"]
+                    if content and content != "placeholder":
+                        decoded = base64.b64decode(content)
+                        with open("shop.db", "wb") as f:
+                            f.write(decoded)
+                        logging.info("✅ База восстановлена из Gist")
+                else:
+                    logging.error(f"❌ Ошибка загрузки: {resp.status}")
+    except Exception as e:
+        logging.error(f"Ошибка восстановления: {e}")
+
+async def periodic_backup():
+    while True:
+        await asyncio.sleep(600)  # каждые 10 минут
+        await backup_database()
 
 # HTTP-заглушка
 async def http_handler(reader, writer):
@@ -189,11 +275,8 @@ def router_menu_kb():
 def router_subscription_kb():
     kb = []
     for months, price in ROUTER_SUB_PRICES.items():
-        label = f"{ROUTER_SUB_MONTHS[months]} — {price}₽"
-        if months > 1:
-            per_month = price // months
-            label += f" ({per_month}₽/мес)"
-        kb.append([InlineKeyboardButton(label, callback_data=f'rsub_{months}')])
+        per_month = price // months
+        kb.append([InlineKeyboardButton(f"{ROUTER_SUB_MONTHS[months]} — {price}₽ ({per_month}₽/мес)", callback_data=f'rsub_{months}')])
     kb.append([InlineKeyboardButton("🔙 Назад", callback_data='router_menu')])
     return InlineKeyboardMarkup(kb)
 
@@ -282,7 +365,7 @@ def order_admin_kb(oid):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     pid = await get_or_create_pid(u.id, u.username, u.first_name)
-    text = f"👋 {BOT_NAME}!\n\n🆔 Ваш ID: {pid}\n\n📡 Роутеры от 7800р\n🌐 VLESS - {PRICES['vless']}р/мес\n🔒 WireGuard - {PRICES['wireguard']}р/мес\n🛡️ AmneziaWG - {PRICES['amneziawg']}р/мес\n\n📞 {ADMIN_USERNAME}"
+    text = f"👋 {BOT_NAME}!\n\n🆔 Ваш ID: {pid}\n\n📡 Роутеры от 7800р\n🌐 VLESS - {PRICES['vless']}р/мес\n🔒 WireGuard - {PRICES['wireguard']}р/мес\n🛡️ AmneziaWG - {PRICES['amneziawg']}р/мес\n\n💳 {CARD_INFO}\n📞 {ADMIN_USERNAME}"
     await update.message.reply_text(text, reply_markup=main_menu(u.id))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -327,8 +410,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif d.startswith('edit_key_'):
             key_id=int(d.replace('edit_key_',''))
             context.user_data['edit_key_id']=key_id
-            context.user_data['edit_step'] = 'input_days'   # ← ВОТ ЭТО ИСПРАВЛЕНО
-            await q.message.edit_text(f"🔑 Ключ ID: {key_id}\n\nВведите +дни или -дни (например +7):"); return
+            context.user_data['edit_step'] = 'input_days'
+            await q.message.edit_text(f"🔑 Ключ ID: {key_id}\n\nВведите +дни или -дни (например +7 или -3):"); return
 
     # ОБЫЧНЫЕ КНОПКИ
     if d == 'back': await q.message.edit_text("🏠 Главное меню:", reply_markup=main_menu(u.id))
@@ -339,7 +422,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price = ROUTERS.get(model, 7800)
         context.user_data['router_model'] = model
         context.user_data['router_price'] = price
-        # Показываем выбор срока подписки
         await q.message.edit_text(f"📡 {model} — {price}₽\n\n⏱️ Выберите срок подписки:", reply_markup=router_subscription_kb())
     elif d.startswith('rsub_'):
         months = int(d.replace('rsub_', ''))
@@ -424,7 +506,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [[InlineKeyboardButton(f"🔐 {PROTOCOL_NAMES.get(s[1],s[1])} ({s[2]}) до {format_date(s[3])}", callback_data=f'edit_key_{s[0]}')] for s in subs]
             kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin')])
             await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\n\nВыберите подписку:", reply_markup=InlineKeyboardMarkup(kb))
-            context.user_data['edit_step'] = None   # ждём нажатия кнопки edit_key_
+            context.user_data['edit_step'] = None
         except: await update.message.reply_text("❌ Числовой ID"); return
     if u.id == ADMIN_ID and context.user_data.get('edit_step') == 'input_days':
         try:
@@ -514,7 +596,13 @@ async def mysubs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЗАПУСК ==========
 async def main():
     await init_db()
+    # Восстановление базы из Gist (если локальный файл отсутствует)
+    await restore_database()
+    # Запускаем периодический бекап
+    asyncio.create_task(periodic_backup())
+    # HTTP-заглушка
     asyncio.create_task(asyncio.start_server(http_handler, "0.0.0.0", PORT))
+    
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addkey", addkey_cmd))
@@ -523,6 +611,10 @@ async def main():
     app.add_handler(CommandHandler("mysubs", mysubs_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    
+    # Запускаем фоновую проверку истёкших подписок
+    asyncio.create_task(check_expired_subscriptions(app, ADMIN_ID))
+    
     await app.initialize(); await app.start()
     print("🤖 Бот запущен!")
     await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
