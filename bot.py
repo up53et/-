@@ -20,10 +20,12 @@ BOT_NAME = "NetVault"
 # Gist Backup
 GIST_TOKEN = os.environ.get("GIST_TOKEN")
 GIST_ID = "63fb67d2ba3f326f99a9048d42f3b5f6"
-GIST_FILENAME = "shop_backup.txt"
+GIST_DB_FILENAME = "shop_backup.txt"          # файл для базы данных
+GIST_SETTINGS_FILENAME = "settings_backup.txt" # файл для настроек
+
+SETTINGS_FILE = "settings.json"
 
 # ---------- Настройки по умолчанию ----------
-SETTINGS_FILE = "settings.json"
 DEFAULT_START_TEXT = (
     "👋 {bot_name}!\n\n"
     "🆔 Ваш ID: {pid}\n\n"
@@ -43,34 +45,76 @@ DEFAULT_ROUTER_PRICES = {
 }
 DEFAULT_ROUTER_SUB_PRICES = {1: 450, 3: 1200, 6: 2100, 12: 3250}
 
-def load_settings():
+# ---------- Загрузка / сохранение настроек ----------
+async def load_settings():
+    """Загружает настройки из локального файла или из Gist, если локальный отсутствует."""
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    
+    # Пытаемся скачать из Gist
     try:
-        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            headers = {"Authorization": f"token {GIST_TOKEN}"}
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    gist = await resp.json()
+                    content = gist["files"][GIST_SETTINGS_FILENAME]["content"]
+                    if content:
+                        settings = json.loads(content)
+                        # Сохраняем локально
+                        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+                            json.dump(settings, f, ensure_ascii=False, indent=2)
+                        return settings
     except:
-        return {
-            'start_text': DEFAULT_START_TEXT,
-            'prices': DEFAULT_PRICES.copy(),
-            'router_prices': DEFAULT_ROUTER_PRICES.copy(),
-            'router_sub_prices': DEFAULT_ROUTER_SUB_PRICES.copy()
-        }
+        pass
+    
+    # Всё остальное – по умолчанию
+    return {
+        'start_text': DEFAULT_START_TEXT,
+        'prices': DEFAULT_PRICES.copy(),
+        'router_prices': DEFAULT_ROUTER_PRICES.copy(),
+        'router_sub_prices': DEFAULT_ROUTER_SUB_PRICES.copy()
+    }
 
-def save_settings(settings):
+async def save_settings(settings):
+    """Сохраняет настройки локально и отправляет в Gist."""
+    # Локально
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
+    
+    # В Gist
+    try:
+        encoded = json.dumps(settings, ensure_ascii=False)
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            headers = {
+                "Authorization": f"token {GIST_TOKEN}",
+                "Accept": "application/vnd.github+json"
+            }
+            data = {"files": {GIST_SETTINGS_FILENAME: {"content": encoded}}}
+            async with session.patch(url, json=data, headers=headers) as resp:
+                if resp.status != 200:
+                    logging.error(f"❌ Ошибка сохранения настроек в Gist: {resp.status}")
+    except Exception as e:
+        logging.error(f"Ошибка сохранения настроек: {e}")
 
-settings = load_settings()
-PRICES = settings.get('prices', DEFAULT_PRICES.copy())
-ROUTERS = settings.get('router_prices', DEFAULT_ROUTER_PRICES.copy())
-ROUTER_SUB_PRICES = settings.get('router_sub_prices', DEFAULT_ROUTER_SUB_PRICES.copy())
-START_TEXT_TEMPLATE = settings.get('start_text', DEFAULT_START_TEXT)
+# Загружаем настройки (асинхронная операция, нужно запускать внутри цикла событий)
+# Для удобства сделаем глобальные переменные доступными после вызова load_settings
+PRICES = DEFAULT_PRICES.copy()
+ROUTERS = DEFAULT_ROUTER_PRICES.copy()
+ROUTER_SUB_PRICES = DEFAULT_ROUTER_SUB_PRICES.copy()
+START_TEXT_TEMPLATE = DEFAULT_START_TEXT
 
 logging.basicConfig(level=logging.INFO)
 
 PROTOCOL_NAMES = {'vless': 'VLESS', 'wireguard': 'WireGuard', 'amneziawg': 'AmneziaWG'}
 DURATION_NAMES = {'1month': '1 мес.', '3months': '3 мес.', '6months': '6 мес.', '1year': '1 год'}
 DURATION_DAYS = {'1month': 30, '3months': 90, '6months': 180, '1year': 365}
-# Скидки применяются автоматически: 3 мес -10%, 6 мес -20%, 12 мес -30%
 DURATION_DISCOUNTS = {'1month': 0, '3months': 0.10, '6months': 0.20, '1year': 0.30}
 ROUTER_SUB_MONTHS = {1: '1 месяц', 3: '3 месяца', 6: '6 месяцев', 12: '1 год'}
 
@@ -254,14 +298,14 @@ async def backup_database():
                 "Authorization": f"token {GIST_TOKEN}",
                 "Accept": "application/vnd.github+json"
             }
-            data = {"files": {GIST_FILENAME: {"content": encoded}}}
+            data = {"files": {GIST_DB_FILENAME: {"content": encoded}}}
             async with session.patch(url, json=data, headers=headers) as resp:
                 if resp.status == 200:
                     logging.info("✅ База сохранена в Gist")
                 else:
-                    logging.error(f"❌ Ошибка сохранения: {resp.status}")
+                    logging.error(f"❌ Ошибка сохранения базы: {resp.status}")
     except Exception as e:
-        logging.error(f"Ошибка бекапа: {e}")
+        logging.error(f"Ошибка бекапа базы: {e}")
 
 async def restore_database():
     if os.path.exists("shop.db"):
@@ -273,16 +317,16 @@ async def restore_database():
             async with session.get(url, headers=headers) as resp:
                 if resp.status == 200:
                     gist = await resp.json()
-                    content = gist["files"][GIST_FILENAME]["content"]
+                    content = gist["files"][GIST_DB_FILENAME]["content"]
                     if content and content != "placeholder":
                         decoded = base64.b64decode(content)
                         with open("shop.db", "wb") as f:
                             f.write(decoded)
                         logging.info("✅ База восстановлена из Gist")
                 else:
-                    logging.error(f"❌ Ошибка загрузки: {resp.status}")
+                    logging.error(f"❌ Ошибка загрузки базы: {resp.status}")
     except Exception as e:
-        logging.error(f"Ошибка восстановления: {e}")
+        logging.error(f"Ошибка восстановления базы: {e}")
 
 async def periodic_backup():
     while True:
@@ -302,7 +346,6 @@ def main_menu(uid=None):
         [InlineKeyboardButton("🔑 Купить VPN", callback_data='vpn_menu')],
         [InlineKeyboardButton("📋 Мои подписки", callback_data='my_subs'),
          InlineKeyboardButton("👤 Профиль", callback_data='profile')],
-        [InlineKeyboardButton("ℹ️ Помощь", callback_data='help')],
     ]
     if uid == ADMIN_ID:
         kb.append([InlineKeyboardButton("👑 Админ", callback_data='admin')])
@@ -355,7 +398,7 @@ def admin_main_kb():
         [InlineKeyboardButton("🌍 Страны", callback_data='admin_countries')],
         [InlineKeyboardButton("📅 Редактировать дату", callback_data='admin_editdate')],
         [InlineKeyboardButton("💰 Изменить цены", callback_data='admin_prices')],
-        [InlineKeyboardButton("📝 Изменить стартовый текст", callback_data='admin_start_text')],
+        [InlineKeyboardButton("📝 Стартовый текст", callback_data='admin_start_text')],
         [InlineKeyboardButton("🔙 Назад", callback_data='back')],
     ])
 
@@ -452,7 +495,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.edit_text("📅 Введите ID пользователя:"); return
         elif d == 'admin_prices':
             await q.message.edit_text("💰 Что меняем?", reply_markup=admin_price_main_kb()); return
-        # --- Установка цены роутера ---
         elif d == 'price_router':
             kb = [[InlineKeyboardButton(model, callback_data=f'price_router_model_{model}')] for model in ROUTERS]
             kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin_prices')])
@@ -460,9 +502,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif d.startswith('price_router_model_'):
             model = d.replace('price_router_model_', '')
             context.user_data['price_target'] = ('router', model)
-            context.user_data['price_step'] = 1
             await q.message.edit_text(f"📡 {model}\n\nВведите новую цену (число):"); return
-        # --- Установка базовой цены VPN за 1 месяц ---
         elif d == 'price_vpn':
             kb = [
                 [InlineKeyboardButton("VLESS", callback_data='price_vpn_vless')],
@@ -474,16 +514,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif d.startswith('price_vpn_'):
             protocol = d.replace('price_vpn_', '')
             context.user_data['price_target'] = ('vpn', protocol)
-            context.user_data['price_step'] = 1
             await q.message.edit_text(f"🔑 {PROTOCOL_NAMES[protocol]}\n\nВведите цену за 1 месяц:"); return
-        # --- Установка базовой цены подписки на роутер ---
         elif d == 'price_router_sub':
             context.user_data['price_target'] = ('router_sub', None)
-            context.user_data['price_step'] = 1
             await q.message.edit_text("⏱️ Подписка на роутер\n\nВведите цену за 1 месяц:"); return
         elif d == 'admin_start_text':
             context.user_data['admin_setting'] = 'start_text'
-            await q.message.edit_text("📝 Введите новый стартовый текст.\nМожно использовать {bot_name}, {pid}, {vless_price}, {wg_price}, {awg_price}, {admin_username}"); return
+            await q.message.edit_text("📝 Введите новый стартовый текст."); return
         elif d.startswith('adm_cnt_'): p=d.replace('adm_cnt_',''); await q.message.edit_text(f"🌍 {PROTOCOL_NAMES[p]}:", reply_markup=await admin_country_manage_kb(p)); return
         elif d.startswith('adm_delcountry_'): _,_,p,c=d.split('_',3); await remove_country(p,c); await q.answer("✅"); await q.message.edit_text(f"🌍 {PROTOCOL_NAMES[p]}:", reply_markup=await admin_country_manage_kb(p)); return
         elif d.startswith('adm_addcountry_'): p=d.replace('adm_addcountry_',''); context.user_data['add_country']=p; await q.message.edit_text(f"➕ Страна для {PROTOCOL_NAMES[p]}:"); return
@@ -549,8 +586,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with aiosqlite.connect('shop.db') as db:
             c=await db.execute('SELECT COUNT(*),SUM(amount) FROM purchases WHERE user_id=? AND status="paid"',(u.id,)); o,s=await c.fetchone()
         await q.message.edit_text(f"👤 {u.first_name}\n🆔 {pid}\n🏷️ @{u.username or 'нет'}\n🛒 Заказов: {o or 0}\n💰 Потрачено: {s or 0}р", reply_markup=main_menu(u.id))
-    elif d == 'help':
-        await q.message.edit_text(f"ℹ️ {BOT_NAME}\n📡 Роутеры от 7800р\n🌐 VLESS - {PRICES['vless']}р\n🔒 WireGuard - {PRICES['wireguard']}р\n🛡️ AmneziaWG - {PRICES['amneziawg']}р\n💳 {CARD_INFO}\n📞 {ADMIN_USERNAME}\n🆔 Ваш ID: {pid}", reply_markup=main_menu(u.id))
 
 # ========== ВЫДАЧА ЗАКАЗА ==========
 async def approve_order(q, context, oid):
@@ -593,114 +628,115 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user; t = update.message.text.strip()
     pid = await get_or_create_pid(u.id, u.username, u.first_name)
 
-    # Админ меняет настройки цен
-    if u.id == ADMIN_ID and context.user_data.get('price_target'):
-        target, item = context.user_data['price_target']
-        try:
-            new_price = int(t)
-            settings = load_settings()
-            if target == 'router':
-                settings['router_prices'][item] = new_price
-                ROUTERS[item] = new_price
-                await update.message.reply_text(f"✅ Цена {item} изменена на {new_price}р")
-            elif target == 'vpn':
-                # new_price - базовая цена за 1 месяц, рассчитываем остальные
-                prices = {}
-                for dur, disc in DURATION_DISCOUNTS.items():
-                    months = DURATION_DAYS[dur] // 30
-                    prices[dur] = int(new_price * months * (1 - disc))
-                settings['prices'][item] = prices['1month']  # базовая
-                PRICES[item] = prices['1month']
-                # Сохраняем также рассчитанные цены в специальном ключе, чтобы отображать
-                # Но для расчёта в длительности используем базовую цену из PRICES
-                await update.message.reply_text(
-                    f"✅ Цены {PROTOCOL_NAMES[item]} обновлены:\n"
-                    f"1 мес: {prices['1month']}р\n"
-                    f"3 мес: {prices['3months']}р (-10%)\n"
-                    f"6 мес: {prices['6months']}р (-20%)\n"
-                    f"12 мес: {prices['1year']}р (-30%)"
-                )
-            elif target == 'router_sub':
-                prices = {}
-                for months, label in ROUTER_SUB_MONTHS.items():
-                    # скидки те же: 3м -10%, 6м -20%, 12м -30%
-                    if months == 1: disc = 0
-                    elif months == 3: disc = 0.10
-                    elif months == 6: disc = 0.20
-                    elif months == 12: disc = 0.30
-                    price = int(new_price * months * (1 - disc))
-                    prices[months] = price
-                settings['router_sub_prices'] = prices
-                ROUTER_SUB_PRICES.update(prices)
-                await update.message.reply_text(
-                    f"✅ Подписка на роутер обновлена:\n"
-                    f"1 мес: {prices[1]}р\n"
-                    f"3 мес: {prices[3]}р (-10%)\n"
-                    f"6 мес: {prices[6]}р (-20%)\n"
-                    f"12 мес: {prices[12]}р (-30%)"
-                )
-            save_settings(settings)
-            asyncio.create_task(backup_database())
-        except:
-            await update.message.reply_text("❌ Введите число")
-        context.user_data.pop('price_target', None)
-        context.user_data.pop('price_step', None)
-        return
-
-    if u.id == ADMIN_ID and context.user_data.get('admin_setting'):
-        setting = context.user_data.pop('admin_setting')
-        if setting == 'start_text':
-            settings = load_settings()
-            settings['start_text'] = t
-            save_settings(settings)
-            global START_TEXT_TEMPLATE
-            START_TEXT_TEMPLATE = t
-            await update.message.reply_text("✅ Стартовый текст обновлён")
-        asyncio.create_task(backup_database())
-        return
-
-    if u.id == ADMIN_ID and context.user_data.get('admin_add'):
-        info = context.user_data['admin_add']; await add_key(info['protocol'], info['country'], t)
-        context.user_data.pop('admin_add'); text, kb = await admin_country_menu(info['protocol'], info['country'])
-        await update.message.reply_text(f"✅ Ключ добавлен!\n{text}", reply_markup=kb)
-        asyncio.create_task(backup_database())
-        return
-    if u.id == ADMIN_ID and context.user_data.get('add_country'):
-        p = context.user_data['add_country']; await add_country(p, t)
-        context.user_data.pop('add_country'); await update.message.reply_text(f"✅ {t} добавлена!", reply_markup=await admin_country_manage_kb(p))
-        asyncio.create_task(backup_database())
-        return
-    if u.id == ADMIN_ID and context.user_data.get('edit_step') == 'input_pid':
-        try:
-            target_pid = int(t)
-            user_info = await get_user_by_pid(target_pid)
-            if not user_info: await update.message.reply_text("❌ Не найден"); context.user_data.pop('edit_step',None); return
-            subs = await get_subs_by_pid(target_pid)
-            if not subs: await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\nНет подписок", reply_markup=admin_main_kb()); context.user_data.pop('edit_step',None); return
-            kb = []
-            for s in subs:
-                display_name = "📡 Подписка на роутер" if s[1] == 'router' else f"🔐 {PROTOCOL_NAMES.get(s[1],s[1])} ({s[2]})"
-                kb.append([InlineKeyboardButton(f"{display_name} до {format_date(s[3])}", callback_data=f'edit_key_{s[0]}')])
-            kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin')])
-            await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\n\nВыберите подписку:", reply_markup=InlineKeyboardMarkup(kb))
-            context.user_data['edit_step'] = None
-        except: await update.message.reply_text("❌ Числовой ID"); return
-    if u.id == ADMIN_ID and context.user_data.get('edit_step') == 'input_days':
-        try:
-            days = int(t)
-            key_id = context.user_data.get('edit_key_id')
-            if key_id:
-                result = await extend_sub(key_id, days)
-                if result:
-                    new_exp, uid = result
-                    sign = "+" if days >= 0 else ""
-                    await context.bot.send_message(uid, f"📅 Подписка изменена!\n🔑 Ключ ID: {key_id}\n⏱️ До: {format_date(new_exp)}\n📅 {sign}{days} дн.")
-                await update.message.reply_text(f"✅ Изменено на {sign}{days} дн.", reply_markup=admin_main_kb())
+    # Админ меняет настройки цен или стартовый текст
+    if u.id == ADMIN_ID:
+        if context.user_data.get('price_target'):
+            target, item = context.user_data['price_target']
+            try:
+                new_price = int(t)
+                settings = await load_settings()
+                if target == 'router':
+                    settings['router_prices'][item] = new_price
+                    ROUTERS[item] = new_price
+                    await update.message.reply_text(f"✅ Цена {item} изменена на {new_price}р")
+                elif target == 'vpn':
+                    # Рассчитываем цены для всех сроков
+                    for dur, disc in DURATION_DISCOUNTS.items():
+                        months = DURATION_DAYS[dur] // 30
+                        # цены не сохраняем отдельно, меняем только базовую
+                    settings['prices'][item] = new_price
+                    PRICES[item] = new_price
+                    # Покажем рассчитанные цены
+                    p = {}
+                    for dur, disc in DURATION_DISCOUNTS.items():
+                        months = DURATION_DAYS[dur] // 30
+                        p[dur] = int(new_price * months * (1 - disc))
+                    await update.message.reply_text(
+                        f"✅ Цены {PROTOCOL_NAMES[item]} обновлены:\n"
+                        f"1 мес: {p['1month']}р\n"
+                        f"3 мес: {p['3months']}р (-10%)\n"
+                        f"6 мес: {p['6months']}р (-20%)\n"
+                        f"12 мес: {p['1year']}р (-30%)"
+                    )
+                elif target == 'router_sub':
+                    prices = {}
+                    for months, label in ROUTER_SUB_MONTHS.items():
+                        if months == 1: disc = 0
+                        elif months == 3: disc = 0.10
+                        elif months == 6: disc = 0.20
+                        elif months == 12: disc = 0.30
+                        price = int(new_price * months * (1 - disc))
+                        prices[months] = price
+                    settings['router_sub_prices'] = prices
+                    ROUTER_SUB_PRICES.update(prices)
+                    await update.message.reply_text(
+                        f"✅ Подписка на роутер обновлена:\n"
+                        f"1 мес: {prices[1]}р\n"
+                        f"3 мес: {prices[3]}р (-10%)\n"
+                        f"6 мес: {prices[6]}р (-20%)\n"
+                        f"12 мес: {prices[12]}р (-30%)"
+                    )
+                await save_settings(settings)
                 asyncio.create_task(backup_database())
-            context.user_data.pop('edit_key_id', None); context.user_data.pop('edit_step', None)
-        except: await update.message.reply_text("❌ Введите число (+7 или -3)"); return
+            except:
+                await update.message.reply_text("❌ Введите число")
+            context.user_data.pop('price_target', None)
+            return
 
-    # Заказ роутера по шагам (4 шага)
+        if context.user_data.get('admin_setting'):
+            setting = context.user_data.pop('admin_setting')
+            if setting == 'start_text':
+                settings = await load_settings()
+                settings['start_text'] = t
+                await save_settings(settings)
+                global START_TEXT_TEMPLATE
+                START_TEXT_TEMPLATE = t
+                await update.message.reply_text("✅ Стартовый текст обновлён")
+            asyncio.create_task(backup_database())
+            return
+
+        if context.user_data.get('admin_add'):
+            info = context.user_data['admin_add']; await add_key(info['protocol'], info['country'], t)
+            context.user_data.pop('admin_add'); text, kb = await admin_country_menu(info['protocol'], info['country'])
+            await update.message.reply_text(f"✅ Ключ добавлен!\n{text}", reply_markup=kb)
+            asyncio.create_task(backup_database())
+            return
+        if context.user_data.get('add_country'):
+            p = context.user_data['add_country']; await add_country(p, t)
+            context.user_data.pop('add_country'); await update.message.reply_text(f"✅ {t} добавлена!", reply_markup=await admin_country_manage_kb(p))
+            asyncio.create_task(backup_database())
+            return
+        if context.user_data.get('edit_step') == 'input_pid':
+            try:
+                target_pid = int(t)
+                user_info = await get_user_by_pid(target_pid)
+                if not user_info: await update.message.reply_text("❌ Не найден"); context.user_data.pop('edit_step',None); return
+                subs = await get_subs_by_pid(target_pid)
+                if not subs: await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\nНет подписок", reply_markup=admin_main_kb()); context.user_data.pop('edit_step',None); return
+                kb = []
+                for s in subs:
+                    display_name = "📡 Подписка на роутер" if s[1] == 'router' else f"🔐 {PROTOCOL_NAMES.get(s[1],s[1])} ({s[2]})"
+                    kb.append([InlineKeyboardButton(f"{display_name} до {format_date(s[3])}", callback_data=f'edit_key_{s[0]}')])
+                kb.append([InlineKeyboardButton("🔙 Назад", callback_data='admin')])
+                await update.message.reply_text(f"👤 {user_info[1]} (ID: {target_pid})\n\nВыберите подписку:", reply_markup=InlineKeyboardMarkup(kb))
+                context.user_data['edit_step'] = None
+            except: await update.message.reply_text("❌ Числовой ID"); return
+        if context.user_data.get('edit_step') == 'input_days':
+            try:
+                days = int(t)
+                key_id = context.user_data.get('edit_key_id')
+                if key_id:
+                    result = await extend_sub(key_id, days)
+                    if result:
+                        new_exp, uid = result
+                        sign = "+" if days >= 0 else ""
+                        await context.bot.send_message(uid, f"📅 Подписка изменена!\n🔑 Ключ ID: {key_id}\n⏱️ До: {format_date(new_exp)}\n📅 {sign}{days} дн.")
+                    await update.message.reply_text(f"✅ Изменено на {sign}{days} дн.", reply_markup=admin_main_kb())
+                    asyncio.create_task(backup_database())
+                context.user_data.pop('edit_key_id', None); context.user_data.pop('edit_step', None)
+            except: await update.message.reply_text("❌ Введите число (+7 или -3)"); return
+
+    # Заказ роутера по шагам
     if context.user_data.get('wait_router') == 'name':
         context.user_data['router_data'] = {'name': t}
         context.user_data['wait_router'] = 'phone'
@@ -801,6 +837,15 @@ async def mysubs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ЗАПУСК ==========
 async def main():
+    global PRICES, ROUTERS, ROUTER_SUB_PRICES, START_TEXT_TEMPLATE
+    
+    # Загружаем настройки (цены, текст) из файла или Gist
+    settings = await load_settings()
+    PRICES = settings.get('prices', DEFAULT_PRICES.copy())
+    ROUTERS = settings.get('router_prices', DEFAULT_ROUTER_PRICES.copy())
+    ROUTER_SUB_PRICES = settings.get('router_sub_prices', DEFAULT_ROUTER_SUB_PRICES.copy())
+    START_TEXT_TEMPLATE = settings.get('start_text', DEFAULT_START_TEXT)
+    
     await init_db()
     await restore_database()
     asyncio.create_task(periodic_backup())
