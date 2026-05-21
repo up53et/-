@@ -9,7 +9,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 import logging
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")   # замени на свой токен или используй переменную окружения
 ADMIN_ID = 5737961034
 ADMIN_USERNAME = "@yng_beko"
 CARD_INFO = "2200-7020-5664-8004 (Игорь Д.)"
@@ -17,7 +17,7 @@ PORT = int(os.environ.get("PORT", 8080))
 BOT_NAME = "NetVault"
 
 # Gist Backup
-GIST_TOKEN = os.environ.get("GIST_TOKEN")
+GIST_TOKEN = os.environ.get("GIST_TOKEN")   # замени на переменную окружения
 GIST_ID = "63fb67d2ba3f326f99a9048d42f3b5f6"
 GIST_FILENAME = "shop_backup.txt"
 
@@ -180,9 +180,12 @@ async def check_expired_subscriptions(app, admin_id):
         await asyncio.sleep(3600)
         try:
             async with aiosqlite.connect('shop.db') as db:
+                # Теперь всегда получаем personal_id, даже если в vpn_keys его нет (берём из users)
                 c = await db.execute(
-                    "SELECT sold_to, protocol, country, personal_id FROM vpn_keys "
-                    "WHERE is_sold=TRUE AND expires_at <= datetime('now')"
+                    """SELECT v.sold_to, v.protocol, v.country, COALESCE(v.personal_id, u.personal_id) as pid
+                       FROM vpn_keys v
+                       LEFT JOIN users u ON v.sold_to = u.user_id
+                       WHERE v.is_sold=TRUE AND v.expires_at <= datetime('now')"""
                 )
                 expired = await c.fetchall()
                 for user_id, protocol, country, pid in expired:
@@ -245,7 +248,7 @@ async def restore_database():
 
 async def periodic_backup():
     while True:
-        await asyncio.sleep(600)  # каждые 10 минут
+        await asyncio.sleep(600)
         await backup_database()
 
 # HTTP-заглушка
@@ -437,7 +440,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith('dur_'):
         _,p,c,dur,price=d.split('_',4); price=int(price)
         oid=await add_order(u.id,f'vpn_{p}',price,protocol=p,country=c,duration=dur)
-        text=f"✅ Заказ №{oid}\n\n🔐 {PROTOCOL_NAMES[p]}\n🌍 {c}\n⏱️ {DURATION_NAMES[dur]}\n💰 {price}р\n\n💳 {CARD_INFO}\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}"
+        text=f"✅ Заказ №{oid}\n\n🔐 {PROTOCOL_NAMES[p]}\n🌍 {c}\n⏱️ {DURATION_NAMES[dur]}\n💰 {price}р\n\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}\n💳 {CARD_INFO}"
         await q.message.edit_text(text, reply_markup=main_menu(u.id))
         await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n{p} {c}\n💰 {price}р\n👤 @{u.username or u.id} (ID: {pid})", reply_markup=order_admin_kb(oid))
     elif d == 'my_subs':
@@ -538,7 +541,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = router_price + sub_price
         oid = await add_order(u.id, f'router_{model}', total)
         await update.message.reply_text(
-            f"✅ Заказ №{oid}\n\n📡 {model}\n⏱️ Подписка: {ROUTER_SUB_MONTHS[sub_months]} ({sub_price}р)\n💰 Итого: {total}р\n\n💳 {CARD_INFO}\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}",
+            f"✅ Заказ №{oid}\n\n📡 {model}\n⏱️ Подписка: {ROUTER_SUB_MONTHS[sub_months]} ({sub_price}р)\n💰 Итого: {total}р\n\n⚠️ ПРИ ОПЛАТЕ УКАЖИТЕ НОМЕР ЗАКАЗА: {oid}\n\n📞 {ADMIN_USERNAME}\n💳 {CARD_INFO}",
             reply_markup=main_menu(u.id)
         )
         await context.bot.send_message(ADMIN_ID, f"🔔 Заказ №{oid}\n📡 {model}\n👤 {name}\n💰 {total}р\nID: {pid}", reply_markup=order_admin_kb(oid))
@@ -596,11 +599,8 @@ async def mysubs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЗАПУСК ==========
 async def main():
     await init_db()
-    # Восстановление базы из Gist (если локальный файл отсутствует)
     await restore_database()
-    # Запускаем периодический бекап
     asyncio.create_task(periodic_backup())
-    # HTTP-заглушка
     asyncio.create_task(asyncio.start_server(http_handler, "0.0.0.0", PORT))
     
     app = Application.builder().token(BOT_TOKEN).build()
@@ -612,7 +612,6 @@ async def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
-    # Запускаем фоновую проверку истёкших подписок
     asyncio.create_task(check_expired_subscriptions(app, ADMIN_ID))
     
     await app.initialize(); await app.start()
